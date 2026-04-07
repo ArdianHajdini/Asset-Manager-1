@@ -74,9 +74,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             artifacts/cs2-demo-manager/src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('artifacts/cs2-demo-manager/src-tauri/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('artifacts/cs2-demo-manager/src-tauri/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-v2-
 
       # ── Install JS/TS dependencies ────────────────────────────────────────
       # --no-frozen-lockfile is required because the lockfile was generated on
@@ -92,6 +92,7 @@ jobs:
         working-directory: artifacts/cs2-demo-manager
         env:
           NODE_ENV: production
+          CARGO_INCREMENTAL: "0"
         run: pnpm exec tauri build
 
       # ── Upload artifacts ──────────────────────────────────────────────────
