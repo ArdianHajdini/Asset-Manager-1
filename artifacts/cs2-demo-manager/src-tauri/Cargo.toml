@@ -8,7 +8,7 @@ license = ""
 
 [lib]
 name = "cs2_demo_manager_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
