@@ -74,9 +74,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             artifacts/cs2-demo-manager/src-tauri/target
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('artifacts/cs2-demo-manager/src-tauri/Cargo.toml') }}
+          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('artifacts/cs2-demo-manager/src-tauri/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-v2-
+            ${{ runner.os }}-cargo-v3-
 
       # ── Install JS/TS dependencies ────────────────────────────────────────
       # --no-frozen-lockfile is required because the lockfile was generated on
@@ -84,6 +84,14 @@ jobs:
       # pnpm will resolve and add them without changing the committed lockfile.
       - name: Install pnpm dependencies
         run: pnpm install --no-frozen-lockfile
+
+      # ── Clean our crate's stale artifacts (not deps) ──────────────────────
+      # Erases only cs2-demo-manager's own compiled objects from the cached
+      # target/ dir so no stale incremental/proc-macro state can survive.
+      # Dependency crates (reqwest, tauri, etc.) stay cached for speed.
+      - name: Clean stale crate artifacts
+        working-directory: artifacts/cs2-demo-manager/src-tauri
+        run: cargo clean -p cs2-demo-manager
 
       # ── Build ─────────────────────────────────────────────────────────────
       # tauri.conf.json has beforeBuildCommand: "pnpm run build"
