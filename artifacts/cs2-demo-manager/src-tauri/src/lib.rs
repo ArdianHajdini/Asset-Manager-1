@@ -180,7 +180,7 @@ pub fn import_demo(
             .ok_or_else(|| "Fehler beim Lesen der kopierten Demo.".to_string())
     } else {
         Err(format!(
-            "Nicht unterstütztes Format: „{}". Nur .dem und .dem.gz werden akzeptiert.",
+            "Nicht unterstütztes Format: \"{}\". Nur .dem und .dem.gz werden akzeptiert.",
             src_name
         ))
     }
