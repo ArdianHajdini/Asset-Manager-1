@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "CS2 Demo Manager"
+version = "1.0.0"
+id = "artifacts/cs2-demo-manager"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21149
+
+[services.development]
+run = "pnpm --filter @workspace/cs2-demo-manager run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/cs2-demo-manager", "run", "build" ]
+publicDir = "artifacts/cs2-demo-manager/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21149"
+BASE_PATH = "/"

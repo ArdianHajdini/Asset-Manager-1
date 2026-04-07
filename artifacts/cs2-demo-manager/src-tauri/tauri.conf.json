@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "productName": "CS2 Demo Manager",
+  "version": "0.1.0",
+  "identifier": "de.cs2demomanager.app",
+  "build": {
+    "frontendDist": "../dist/public",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm run build",
+    "beforeDevCommand": "pnpm run dev"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CS2 Demo Manager",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' tauri: asset: https://open.faceit.com https://accounts.faceit.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: tauri: asset:; connect-src 'self' https://open.faceit.com https://accounts.faceit.com https: ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": []
+  }
+}

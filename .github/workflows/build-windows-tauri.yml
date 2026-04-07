@@ -1,0 +1,140 @@
+name: Build CS2 Demo Manager (Windows)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "artifacts/cs2-demo-manager/**"
+      - ".github/workflows/build-windows-tauri.yml"
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Critical: remove Linux-only platform exclusions ──────────────────
+      # pnpm-workspace.yaml excludes all win32 native binaries (esbuild,
+      # rollup, lightningcss, tailwindcss-oxide) because Replit runs Linux.
+      # On a Windows runner those exclusions break the Vite build entirely.
+      # We patch the file locally on the runner before pnpm install runs.
+      # This change is NOT committed back to the repo.
+      - name: Patch pnpm-workspace.yaml for Windows native binaries
+        shell: pwsh
+        run: |
+          $lines = Get-Content pnpm-workspace.yaml
+          $filtered = $lines | Where-Object {
+            # Keep every line that is NOT a win32/windows platform exclusion
+            $_ -notmatch '"[^"]*win32[^"]*":\s*"-"' -and
+            $_ -notmatch '"[^"]*windows[^"]*":\s*"-"'
+          }
+          # Disable the 24-hour minimum release age check.
+          # The lockfile was generated on Linux; Windows-specific optional deps
+          # (e.g. @esbuild/win32-x64) may be freshly resolved on this runner.
+          $filtered = $filtered -replace 'minimumReleaseAge:\s*\d+', 'minimumReleaseAge: 0'
+          $filtered | Set-Content pnpm-workspace.yaml
+          Write-Host "Patched pnpm-workspace.yaml — win32 exclusions removed."
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Get pnpm store path
+        id: pnpm-cache
+        shell: pwsh
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $env:GITHUB_OUTPUT
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install Rust stable (MSVC target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            artifacts/cs2-demo-manager/src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('artifacts/cs2-demo-manager/src-tauri/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # ── Install JS/TS dependencies ────────────────────────────────────────
+      # --no-frozen-lockfile is required because the lockfile was generated on
+      # Linux and does not include Windows-specific optional dependencies.
+      # pnpm will resolve and add them without changing the committed lockfile.
+      - name: Install pnpm dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      # ── Build ─────────────────────────────────────────────────────────────
+      # tauri.conf.json has beforeBuildCommand: "pnpm run build"
+      # so Tauri will build the Vite frontend automatically before compiling Rust.
+      - name: Build Tauri app (release)
+        working-directory: artifacts/cs2-demo-manager
+        env:
+          NODE_ENV: production
+        run: pnpm exec tauri build
+
+      # ── Upload artifacts ──────────────────────────────────────────────────
+      - name: Upload portable .exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: CS2DemoManager-portable-exe
+          path: artifacts/cs2-demo-manager/src-tauri/target/release/cs2-demo-manager.exe
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: CS2DemoManager-installer-msi
+          path: artifacts/cs2-demo-manager/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: CS2DemoManager-installer-nsis
+          path: artifacts/cs2-demo-manager/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ── Summary ───────────────────────────────────────────────────────────
+      - name: Print build summary
+        if: always()
+        shell: pwsh
+        run: |
+          $releaseDir = "artifacts/cs2-demo-manager/src-tauri/target/release"
+          Write-Host "=== Build output ==="
+          if (Test-Path "$releaseDir/cs2-demo-manager.exe") {
+            $size = (Get-Item "$releaseDir/cs2-demo-manager.exe").length / 1MB
+            Write-Host "  Portable EXE: $([math]::Round($size,1)) MB"
+          }
+          Get-ChildItem "$releaseDir/bundle/msi/*.msi" -ErrorAction SilentlyContinue | ForEach-Object {
+            $size = $_.length / 1MB
+            Write-Host "  MSI: $($_.Name) ($([math]::Round($size,1)) MB)"
+          }
+          Get-ChildItem "$releaseDir/bundle/nsis/*.exe" -ErrorAction SilentlyContinue | ForEach-Object {
+            $size = $_.length / 1MB
+            Write-Host "  NSIS: $($_.Name) ($([math]::Round($size,1)) MB)"
+          }

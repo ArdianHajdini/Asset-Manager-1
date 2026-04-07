@@ -1,0 +1,132 @@
+/**
+ * Tauri bridge — detects whether the app is running inside a Tauri desktop window
+ * and provides typed wrappers around `invoke()`. Falls back gracefully in browser mode.
+ *
+ * Usage:
+ *   import { isTauri, invokeCommand } from './tauriBridge';
+ */
+
+import type { Demo } from "../types/demo";
+
+// ─────────────────────────────────────────
+//  Environment detection
+// ─────────────────────────────────────────
+
+/** True when running inside a Tauri native window. */
+export const isTauri = (): boolean => {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+};
+
+/** Dynamically import Tauri's invoke only when needed. */
+async function getInvoke() {
+  if (!isTauri()) throw new Error("Not in Tauri environment");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke;
+}
+
+// ─────────────────────────────────────────
+//  Typed command wrappers
+// ─────────────────────────────────────────
+
+export interface TauriDemoEntry {
+  filename: string;
+  displayName: string;
+  filepath: string;
+  directory: string;
+  size: number;
+  modifiedAt: string;
+}
+
+export interface TauriLaunchResult {
+  status: "launched" | "clipboard_fallback";
+  command?: string;
+}
+
+/** Scan a directory for .dem files and return metadata. */
+export async function tauriListDemos(directory: string): Promise<TauriDemoEntry[]> {
+  const invoke = await getInvoke();
+  return invoke<TauriDemoEntry[]>("list_demos", { directory });
+}
+
+/**
+ * Import a demo file into the demo library directory.
+ * Handles .dem.gz decompression automatically when extractGz is true.
+ */
+export async function tauriImportDemo(
+  sourcePath: string,
+  destDir: string,
+  extractGz: boolean
+): Promise<TauriDemoEntry> {
+  const invoke = await getInvoke();
+  return invoke<TauriDemoEntry>("import_demo", {
+    sourcePath,
+    destDir,
+    extractGz,
+  });
+}
+
+/** Delete a demo file from the filesystem. */
+export async function tauriDeleteDemoFile(filepath: string): Promise<void> {
+  const invoke = await getInvoke();
+  return invoke("delete_demo_file", { filepath });
+}
+
+/** Rename a demo file on disk. Returns the new filepath. */
+export async function tauriRenameDemoFile(
+  filepath: string,
+  newName: string
+): Promise<string> {
+  const invoke = await getInvoke();
+  return invoke<string>("rename_demo_file", { filepath, newName });
+}
+
+/** Open a folder (or the parent folder of a file) in the OS file manager. */
+export async function tauriOpenFolder(path: string): Promise<void> {
+  const invoke = await getInvoke();
+  return invoke("open_folder", { path });
+}
+
+/**
+ * Launch CS2 with a demo file. Tries Steam URI first, then direct cs2.exe launch.
+ * Returns a result indicating whether the launch succeeded or a clipboard fallback is needed.
+ */
+export async function tauriLaunchCS2(
+  cs2ExePath: string,
+  demoPath: string
+): Promise<TauriLaunchResult> {
+  const invoke = await getInvoke();
+  return invoke<TauriLaunchResult>("launch_cs2", { cs2ExePath, demoPath });
+}
+
+/** Check whether the given cs2.exe path actually exists. */
+export async function tauriCheckCS2Path(cs2Path: string): Promise<boolean> {
+  const invoke = await getInvoke();
+  return invoke<boolean>("check_cs2_path", { cs2Path });
+}
+
+/** Attempt to auto-detect the Steam installation path. Returns null if not found. */
+export async function tauriDetectSteamPath(): Promise<string | null> {
+  const invoke = await getInvoke();
+  return invoke<string | null>("detect_steam_path");
+}
+
+/** Get file metadata for a specific demo path. */
+export async function tauriGetFileInfo(filepath: string): Promise<TauriDemoEntry> {
+  const invoke = await getInvoke();
+  return invoke<TauriDemoEntry>("get_file_info", { filepath });
+}
+
+/**
+ * Convert a TauriDemoEntry to the app's Demo type (adds a placeholder id).
+ * The actual id is assigned by the frontend storage layer.
+ */
+export function tauriEntryToDemo(entry: TauriDemoEntry): Omit<Demo, "id"> {
+  return {
+    filename: entry.filename,
+    displayName: entry.displayName,
+    filepath: entry.filepath,
+    directory: entry.directory,
+    size: entry.size,
+    modifiedAt: entry.modifiedAt,
+  };
+}
