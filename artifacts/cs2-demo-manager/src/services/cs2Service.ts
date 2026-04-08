@@ -160,16 +160,26 @@ export function buildSteamLaunchUri(playdemoArg: string): string {
   return `steam://rungameid/730//+playdemo%20${playdemoArg}`;
 }
 
+export type LaunchOutcome = {
+  status: "launched" | "clipboard_fallback";
+  method?: string;
+  note?: string;
+  command?: string;
+  consoleCmd: string;
+  steamUri: string;
+};
+
 /**
  * Launch CS2 with the given demo.
  *
  * @param demoFilename  The .dem filename (e.g. "mydemo.dem").
  * @param cs2Path       Full path to cs2.exe.
+ * @returns             Structured LaunchOutcome with status, method, and debug info.
  */
 export async function launchDemoInCS2(
   demoFilename: string,
   cs2Path: string
-): Promise<"launched" | "clipboard_fallback"> {
+): Promise<LaunchOutcome> {
   const playdemoArg = buildPlaydemoArg(demoFilename);
   const consoleCmd = buildPlaydemoCommand(playdemoArg);
   const steamUri = buildSteamLaunchUri(playdemoArg);
@@ -185,28 +195,34 @@ export async function launchDemoInCS2(
 
   if (isTauri()) {
     try {
-      // Rust handles the full launch hierarchy:
-      //   PRIMARY  → cmd /C start steam://rungameid/730//+playdemo "replays/<name>"
-      //   FALLBACK → spawn cs2.exe directly with +playdemo arg
-      //   LAST     → returns status "clipboard_fallback"
       console.log("[CS2DM] Calling Rust launch_cs2...");
       const result = await tauriLaunchCS2(cs2Path, playdemoArg);
       console.log("[CS2DM] Rust result:", result);
 
-      if (result.status === "launched") {
-        console.log("[CS2DM] Steam launch succeeded:", result.command);
-        return "launched";
+      if (result.status === "clipboard_fallback") {
+        const cmd = result.command ?? consoleCmd;
+        await copyToClipboard(cmd);
+        console.log("[CS2DM] Clipboard fallback, copied:", cmd);
       }
 
-      // status === "clipboard_fallback"
-      const cmd = result.command ?? consoleCmd;
-      await copyToClipboard(cmd);
-      console.log("[CS2DM] Clipboard fallback, copied:", cmd);
-      return "clipboard_fallback";
+      return {
+        status: result.status,
+        method: result.method,
+        note: result.note,
+        command: result.command,
+        consoleCmd,
+        steamUri,
+      };
     } catch (err) {
       console.error("[CS2DM] Launch error:", err);
       await copyToClipboard(consoleCmd);
-      return "clipboard_fallback";
+      return {
+        status: "clipboard_fallback",
+        method: "none",
+        note: "Tauri-Aufruf fehlgeschlagen. Bitte CS2 manuell starten.",
+        consoleCmd,
+        steamUri,
+      };
     }
   }
 
@@ -214,9 +230,9 @@ export async function launchDemoInCS2(
   console.log("[CS2DM] Browser mode, opening Steam URI:", steamUri);
   try {
     window.open(steamUri, "_blank");
-    return "launched";
+    return { status: "launched", method: "browser_uri", consoleCmd, steamUri };
   } catch {
     await copyToClipboard(consoleCmd);
-    return "clipboard_fallback";
+    return { status: "clipboard_fallback", method: "none", consoleCmd, steamUri };
   }
 }
