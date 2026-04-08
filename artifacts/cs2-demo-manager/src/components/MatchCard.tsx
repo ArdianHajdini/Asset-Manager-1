@@ -316,31 +316,60 @@ export function MatchCard({ match }: MatchCardProps) {
               Voice-Modus
             </p>
             <div className="grid grid-cols-4 gap-1">
-              {VOICE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.mode}
-                  onClick={() => setVoiceMode(opt.mode)}
-                  title={opt.notImplementedNote ?? opt.description}
-                  className={cn(
-                    "relative px-2 py-1.5 rounded-lg border text-xs font-medium transition-all",
-                    voiceMode === opt.mode
-                      ? "border-orange-500/60 bg-orange-500/15 text-orange-300"
-                      : "border-white/8 bg-white/3 text-white/40 hover:text-white/60"
-                  )}
-                >
-                  {opt.label}
-                  {!opt.implemented && (
-                    <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-yellow-500/80" />
-                  )}
-                </button>
-              ))}
+              {VOICE_OPTIONS.map((opt) => {
+                const hasFaceitRoster =
+                  opt.mode === "own_team" || opt.mode === "enemy";
+                return (
+                  <button
+                    key={opt.mode}
+                    onClick={() => setVoiceMode(opt.mode)}
+                    title={hasFaceitRoster
+                      ? `${opt.description} — FACEIT-Spielerliste verfügbar`
+                      : (opt.notImplementedNote ?? opt.description)}
+                    className={cn(
+                      "relative px-2 py-1.5 rounded-lg border text-xs font-medium transition-all",
+                      voiceMode === opt.mode
+                        ? "border-orange-500/60 bg-orange-500/15 text-orange-300"
+                        : "border-white/8 bg-white/3 text-white/40 hover:text-white/60"
+                    )}
+                  >
+                    {opt.label}
+                    {hasFaceitRoster ? (
+                      <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-green-500/80" title="FACEIT-Spielerliste verfügbar" />
+                    ) : !opt.implemented ? (
+                      <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-yellow-500/80" />
+                    ) : null}
+                  </button>
+                );
+              })}
             </div>
-            {VOICE_OPTIONS.find((o) => o.mode === voiceMode)?.notImplementedNote && (
+
+            {/* Player list for own_team / enemy */}
+            {(voiceMode === "own_team" || voiceMode === "enemy") && (
+              <div className="mt-2 p-2 rounded-lg bg-black/25 border border-white/5">
+                <p className="text-white/30 text-[10px] font-semibold mb-1 uppercase tracking-wider">
+                  {voiceMode === "own_team" ? "Eigenes Team" : "Gegner"}
+                </p>
+                <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+                  {(voiceMode === "own_team" ? ownTeam : opponent).players.map((p) => (
+                    <span key={p.nickname} className="text-white/55 text-[11px]">{p.nickname}</span>
+                  ))}
+                </div>
+                <p className="text-white/20 text-[9px] mt-1.5">
+                  Tipp: Spieler manuell in CS2 über die Scoreboard-Stummschaltung deaktivieren.
+                </p>
+              </div>
+            )}
+
+            {/* Note for modes without roster data */}
+            {voiceMode !== "own_team" && voiceMode !== "enemy" &&
+              VOICE_OPTIONS.find((o) => o.mode === voiceMode)?.notImplementedNote && (
               <p className="mt-1.5 text-[10px] text-yellow-400/60 flex items-center gap-1">
                 <Info className="w-3 h-3 shrink-0" />
                 {VOICE_OPTIONS.find((o) => o.mode === voiceMode)?.notImplementedNote}
               </p>
             )}
+
             {fullCommand && (
               <div className="mt-2 flex items-center gap-2 bg-black/40 rounded px-2.5 py-1.5">
                 <code className="flex-1 font-mono text-[11px] text-orange-300/80 truncate">{fullCommand}</code>
