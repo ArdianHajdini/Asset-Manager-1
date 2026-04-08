@@ -15,6 +15,8 @@ export interface AppSettings {
   steamPath: string;
   autoExtractGz: boolean;
   autoAddToLibrary: boolean;
+  /** Folder to scan for downloaded demo files (.dem, .dem.gz, .dem.zst) */
+  downloadsFolder: string;
 }
 
 export type CS2Status = "found" | "not_found" | "unknown";
