@@ -14,6 +14,7 @@ import {
 } from "../services/faceitDownloadService";
 import { getMatchDetails } from "../services/faceitMatchService";
 import { launchDemoInCS2 } from "../services/cs2Service";
+import { isTauri } from "../services/tauriBridge";
 import { useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 
@@ -56,6 +57,18 @@ export function MatchCard({ match }: MatchCardProps) {
 
   async function handleDownload() {
     if (!connection) return;
+
+    // In Tauri mode: block if no replay folder is configured — demos must go
+    // into the CS2 replay folder or CS2 won't find them.
+    if (isTauri() && !settings.demoDirectory) {
+      setStatus({
+        type: "error",
+        message:
+          "Kein CS2 Replay-Ordner konfiguriert. Bitte die Einstellungen öffnen und CS2 automatisch erkennen lassen.",
+      });
+      return;
+    }
+
     setDownloadState(match.match_id, { status: "downloading", progress: 0 });
     try {
       const details = await getMatchDetails(match.match_id, connection);
@@ -89,14 +102,14 @@ export function MatchCard({ match }: MatchCardProps) {
       if (demo) {
         setDownloadState(match.match_id, { status: "done", demoPath: demo.filepath, demoId: demo.id });
         await refreshDemos();
-        setStatus({ type: "success", message: `Demo „${displayName}" heruntergeladen und in Bibliothek gespeichert.` });
+        setStatus({ type: "success", message: `Demo „${displayName}" in den CS2 Replay-Ordner heruntergeladen.` });
       } else {
-        // Browser fallback — download was triggered but not registered
+        // Browser fallback — file downloaded to browser's Downloads folder
         setDownloadState(match.match_id, { status: "done" });
         setStatus({
           type: "info",
           message:
-            "Download gestartet. Im Browser kann die Demo nicht automatisch gespeichert werden — bitte manuell importieren.",
+            "Browser-Download gestartet. Im Browser-Modus wird die Demo in deinen Downloads-Ordner gespeichert und muss manuell in den CS2 Replay-Ordner verschoben werden. Vollständiger Workflow (automatisch in Replay-Ordner + direkt spielbar) ist nur in der nativen Desktop-App verfügbar.",
         });
       }
     } catch (err) {
@@ -106,15 +119,27 @@ export function MatchCard({ match }: MatchCardProps) {
   }
 
   async function handleWatch() {
-    const demo = existingDemo ?? (dlState.demoId ? null : null);
+    const demo = existingDemo;
     if (!demo) return;
-    const result2 = await launchDemoInCS2(demo.filepath, settings.cs2Path);
+
+    // Browser mode: can't control file location or launch CS2 reliably
+    if (!isTauri()) {
+      setStatus({
+        type: "info",
+        message:
+          "Demo in CS2 starten ist nur in der nativen Desktop-App möglich. Im Browser: Starte CS2, öffne die Konsole und gib den playdemo-Befehl manuell ein.",
+      });
+      return;
+    }
+
+    // Use filename (not filepath) — cs2Service derives "replays/FILENAME" from it
+    const result2 = await launchDemoInCS2(demo.filename, settings.cs2Path);
     if (result2 === "launched") {
-      setStatus({ type: "success", message: `Demo wird in CS2 gestartet...` });
+      setStatus({ type: "success", message: `Demo wird über Steam in CS2 gestartet...` });
     } else {
       setStatus({
         type: "info",
-        message: "CS2 konnte nicht automatisch gestartet werden. Befehl in Zwischenablage kopiert.",
+        message: "CS2 konnte nicht automatisch gestartet werden. Befehl wurde in die Zwischenablage kopiert — in CS2-Konsole einfügen.",
       });
     }
   }
@@ -233,13 +258,24 @@ export function MatchCard({ match }: MatchCardProps) {
         <div className="flex items-center gap-2">
           {isAlreadyDownloaded ? (
             <>
-              <button
-                onClick={handleWatch}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-400 active:bg-orange-600 text-white text-sm font-medium transition-colors"
-              >
-                <Play className="w-3.5 h-3.5" />
-                In CS2 ansehen
-              </button>
+              {isTauri() ? (
+                <button
+                  onClick={handleWatch}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-400 active:bg-orange-600 text-white text-sm font-medium transition-colors"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  In CS2 ansehen
+                </button>
+              ) : (
+                <div
+                  title="Nur in der nativen Desktop-App verfügbar"
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg border border-white/10 bg-white/3 text-white/25 text-sm font-medium cursor-not-allowed select-none"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  In CS2 ansehen
+                  <span className="text-xs text-white/20">(nur Desktop)</span>
+                </div>
+              )}
               <button
                 onClick={handleOpenInLibrary}
                 className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium text-white/50 hover:text-white/80 hover:bg-white/8 transition-all"

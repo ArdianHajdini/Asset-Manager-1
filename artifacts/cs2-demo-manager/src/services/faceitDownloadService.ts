@@ -93,6 +93,14 @@ export async function downloadFaceitDemo(
   displayName: string,
   onProgress?: ProgressCallback
 ): Promise<Demo | null> {
+  // Block download if no target directory is configured (Tauri only — browser
+  // mode always downloads to the browser's Downloads folder).
+  if (isTauri() && !destDir) {
+    throw new Error(
+      "Kein CS2 Replay-Ordner konfiguriert. Bitte die Einstellungen öffnen und CS2 automatisch erkennen lassen."
+    );
+  }
+
   const rawFilename = demoFilenameFromUrl(demoUrl, matchId);
 
   if (!isTauri()) {

@@ -301,6 +301,22 @@ pub mod commands {
 
     // ── Commands — CS2 launcher ───────────────────────
 
+    /// Launch CS2 with a demo via the correct launch hierarchy:
+    ///
+    /// **Primary — Steam URI (Windows + Linux)**
+    ///   Uses the `steam://rungame/730/0/+playdemo+<arg>` URI protocol.
+    ///   On Windows this runs through `cmd /C start`, which calls ShellExecute
+    ///   and hands the URI to the Steam client's registered protocol handler.
+    ///   On Linux it uses `xdg-open`.
+    ///   Steam starts (or focuses) and passes the +playdemo argument to CS2.
+    ///
+    /// **Fallback — direct cs2.exe spawn**
+    ///   Only used if the Steam URI handler call itself fails (Steam not installed,
+    ///   `cmd` not found, etc.).  Requires `cs2_exe_path` to exist on disk.
+    ///
+    /// **Clipboard fallback**
+    ///   If both methods fail, returns status="clipboard_fallback" so the frontend
+    ///   can copy the console command and instruct the user to paste it manually.
     #[tauri::command]
     pub fn launch_cs2(
         cs2_exe_path: String,
@@ -309,22 +325,73 @@ pub mod commands {
         // must live in <Steam>/steamapps/…/game/csgo/replays/.
         playdemo_arg: String,
     ) -> Result<LaunchResult, String> {
-        let exe = PathBuf::from(&cs2_exe_path);
-        if !exe.exists() {
-            return Err(format!("CS2 nicht gefunden unter: {}", cs2_exe_path));
+        let console_cmd = format!("playdemo {}", playdemo_arg);
+        // steam://rungame/<appid>/<user-placeholder>/+<args>
+        // App ID 730 = CS2. User placeholder "0" means "current logged-in user".
+        let steam_uri = format!("steam://rungame/730/0/+playdemo+{}", playdemo_arg);
+
+        // ── Primary: Steam URI ─────────────────────────────────────────────
+        #[cfg(target_os = "windows")]
+        {
+            // `cmd /C start "" "steam://..."` hands the URI to ShellExecute,
+            // which invokes the Steam URI handler registered in the Windows registry.
+            // The empty string second arg is the window title (required by `start`
+            // when the first arg is a quoted URI so `start` doesn't misparse it).
+            let steam_ok = Command::new("cmd")
+                .args(["/C", "start", "", &steam_uri])
+                .spawn()
+                .is_ok();
+
+            if steam_ok {
+                return Ok(LaunchResult {
+                    status: "gestartet".to_string(),
+                    command: Some(console_cmd),
+                });
+            }
+
+            // ── Fallback: direct cs2.exe ───────────────────────────────────
+            let exe = PathBuf::from(&cs2_exe_path);
+            if exe.exists() {
+                let direct_ok = Command::new(&exe)
+                    .arg("+playdemo")
+                    .arg(&playdemo_arg)
+                    .spawn()
+                    .is_ok();
+                if direct_ok {
+                    return Ok(LaunchResult {
+                        status: "gestartet".to_string(),
+                        command: Some(console_cmd),
+                    });
+                }
+            }
         }
-        let cmd_str = format!(
-            "\"{}\" +playdemo \"{}\"",
-            cs2_exe_path, playdemo_arg
-        );
-        Command::new(&exe)
-            .arg("+playdemo")
-            .arg(&playdemo_arg)
-            .spawn()
-            .map_err(|e| format!("CS2 konnte nicht gestartet werden: {}", e))?;
+
+        #[cfg(target_os = "linux")]
+        {
+            let steam_ok = Command::new("xdg-open").arg(&steam_uri).spawn().is_ok();
+            if steam_ok {
+                return Ok(LaunchResult {
+                    status: "gestartet".to_string(),
+                    command: Some(console_cmd),
+                });
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let steam_ok = Command::new("open").arg(&steam_uri).spawn().is_ok();
+            if steam_ok {
+                return Ok(LaunchResult {
+                    status: "gestartet".to_string(),
+                    command: Some(console_cmd),
+                });
+            }
+        }
+
+        // ── Both methods failed — clipboard fallback ───────────────────────
         Ok(LaunchResult {
-            status: "gestartet".to_string(),
-            command: Some(format!("playdemo {}", playdemo_arg)),
+            status: "clipboard_fallback".to_string(),
+            command: Some(console_cmd),
         })
     }
 

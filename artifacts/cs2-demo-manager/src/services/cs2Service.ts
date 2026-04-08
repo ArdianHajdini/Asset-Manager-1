@@ -160,12 +160,14 @@ export function buildSteamLaunchUri(playdemoArg: string): string {
  * @param cs2Path       Full path to cs2.exe.
  *
  * In Tauri (desktop):
- *   - Launches cs2.exe with +playdemo replays/FILENAME
- *   - Returns "clipboard_fallback" with the console command if launch fails
+ *   PRIMARY  → Steam URI via `cmd /C start steam://rungame/730/0/+playdemo+replays/DEMO`
+ *              ShellExecute hands off to the Steam client; Steam launches CS2.
+ *   FALLBACK → spawn cs2.exe directly with +playdemo arg (if Steam URI fails).
+ *   LAST     → returns "clipboard_fallback" — frontend copies the console cmd.
  *
  * In browser:
- *   - Opens Steam URI steam://rungame/730/... via window.open
- *   - Falls back to clipboard copy of playdemo command
+ *   - Opens Steam URI steam://rungame/730/... via window.open (Steam handles it).
+ *   - Falls back to clipboard copy of the playdemo command.
  */
 export async function launchDemoInCS2(
   demoFilename: string,

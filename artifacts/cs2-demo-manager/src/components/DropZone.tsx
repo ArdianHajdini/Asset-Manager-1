@@ -57,6 +57,17 @@ export function DropZone({ onSuccess }: DropZoneProps) {
 
   async function handleTauriPath(path: string) {
     const name = path.split(/[\\/]/).pop() ?? "";
+
+    // Hard block: no replay folder configured
+    if (!settings.demoDirectory) {
+      setStatus({
+        type: "error",
+        message:
+          "Kein CS2 Replay-Ordner konfiguriert. Bitte die Einstellungen öffnen und CS2 automatisch erkennen lassen.",
+      });
+      return;
+    }
+
     if (!name.endsWith(".dem") && !name.endsWith(".dem.gz") && !name.endsWith(".dem.zst")) {
       setStatus({
         type: "error",
@@ -90,9 +101,17 @@ export function DropZone({ onSuccess }: DropZoneProps) {
       });
       return;
     }
-    const demo = buildDemoFromFile(file, settings.demoDirectory);
+    // Browser mode: we can't copy to the replay folder, so add a clear notice
+    const demo = buildDemoFromFile(file, settings.demoDirectory || "browser");
     addDemoToLibrarySync(demo);
-    setStatus({ type: "success", message: `Demo importiert: „${demo.displayName}"` });
+    if (!isTauri()) {
+      setStatus({
+        type: "info",
+        message: `Demo zur Bibliothek hinzugefügt (Browser-Vorschau). Im nativen Desktop-Modus wird die Datei automatisch in den CS2 Replay-Ordner kopiert.`,
+      });
+    } else {
+      setStatus({ type: "success", message: `Demo importiert: „${demo.displayName}"` });
+    }
     onSuccess?.();
   }
 
@@ -126,6 +145,16 @@ export function DropZone({ onSuccess }: DropZoneProps) {
 
     if (!isTauri()) {
       inputRef.current?.click();
+      return;
+    }
+
+    // Block picker if replay folder is not yet configured
+    if (!settings.demoDirectory) {
+      setStatus({
+        type: "error",
+        message:
+          "Kein CS2 Replay-Ordner konfiguriert. Bitte die Einstellungen öffnen und CS2 automatisch erkennen lassen.",
+      });
       return;
     }
 
