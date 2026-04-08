@@ -129,6 +129,16 @@ export async function tauriGetFileInfo(filepath: string): Promise<TauriDemoEntry
 }
 
 /**
+ * Check whether CS2 is currently running as a process.
+ * Windows: queries tasklist for cs2.exe.
+ * Returns false if the check fails (e.g. permission denied).
+ */
+export async function tauriIsCS2Running(): Promise<boolean> {
+  const invoke = await getInvoke();
+  return invoke<boolean>("is_cs2_running");
+}
+
+/**
  * Convert a TauriDemoEntry to the app's Demo type (adds a placeholder id).
  * The actual id is assigned by the frontend storage layer.
  */
