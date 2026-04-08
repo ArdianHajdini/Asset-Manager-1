@@ -334,36 +334,30 @@ pub mod commands {
             // CREATE_NO_WINDOW — suppresses the black cmd console flash
             const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-            // ── Build the exact Steam URI ──────────────────────────────────
-            // SPACE between +playdemo and replays/<name> (not a plus sign).
-            let steam_uri = format!("steam://rungame/730/0/+playdemo {}", playdemo_arg);
-
             // ── Build the raw cmd argument string ─────────────────────────
-            // We pass this as a single raw argument to cmd.exe so that cmd
-            // receives EXACTLY what you would type at the prompt:
+            // Correct Steam URI format for CS2 demo launch:
+            //   steam://rungameid/730//+playdemo "replays/<name>"
             //
-            //   /C start "" "steam://rungame/730/0/+playdemo replays/<name>"
+            // Key differences from previous (broken) attempts:
+            //   - "rungameid" (not "rungame")
+            //   - "730//" — double slash, empty user-id field (not "730/0/")
+            //   - demo name is QUOTED with " inside the URI
+            //   - the steam:// URI itself is NOT wrapped in outer quotes —
+            //     "start" handles protocol URIs without needing outer quotes
             //
-            // Using raw_arg (std::os::windows::process::CommandExt) bypasses
-            // Rust's automatic per-argument quoting.  Without raw_arg, Rust
-            // splits the steam_uri into a separately-quoted arg, and cmd.exe
-            // re-parses the quoted URI in a way that truncates everything after
-            // the space — so Steam only receives the base URI without the
-            // playdemo argument.
+            // Full cmd command as typed manually:
+            //   start steam://rungameid/730//+playdemo "replays/<name>"
             //
-            // With raw_arg the Windows CreateProcess lpCommandLine becomes:
-            //   cmd /C start "" "steam://rungame/730/0/+playdemo replays/<name>"
-            // which is byte-for-byte identical to typing it in cmd.exe manually.
+            // We use raw_arg so Rust does not add any extra quoting:
             let raw_cmd_arg = format!(
-                "/C start \"\" \"steam://rungame/730/0/+playdemo {}\"",
-                playdemo_arg
+                "/C start steam://rungameid/730//+playdemo \"{}\"",
+                playdemo_arg   // already "replays/<demo_name_without_ext>"
             );
             let cmd_debug = format!(
-                "cmd /C start \"\" \"steam://rungame/730/0/+playdemo {}\"",
+                "cmd /C start steam://rungameid/730//+playdemo \"{}\"",
                 playdemo_arg
             );
 
-            eprintln!("[CS2DM] Steam URI : {}", steam_uri);
             eprintln!("[CS2DM] CMD string: {}", cmd_debug);
 
             // ── PRIMARY: cmd /C start "" "<steam_uri>" ────────────────────
@@ -403,7 +397,7 @@ pub mod commands {
 
         #[cfg(not(target_os = "windows"))]
         {
-            let steam_uri = format!("steam://rungame/730/0/+playdemo {}", playdemo_arg);
+            let steam_uri = format!("steam://rungameid/730//+playdemo \"{}\"", playdemo_arg);
             eprintln!("[CS2DM] Steam URI (non-windows): {}", steam_uri);
             let _ = Command::new("xdg-open").arg(&steam_uri).spawn();
         }
