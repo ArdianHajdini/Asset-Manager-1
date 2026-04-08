@@ -15,6 +15,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // Downloads-Ordner: auto-detected from Windows USERPROFILE if left empty.
   // User can override in settings.
   downloadsFolder: "",
+  // Steam ID64 of the local player — filled automatically when connecting via FACEIT.
+  steamId: "",
 };
 
 export function loadDemos(): Demo[] {
