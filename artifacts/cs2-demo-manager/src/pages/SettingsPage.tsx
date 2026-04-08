@@ -309,6 +309,20 @@ export function SettingsPage() {
               }}
             />
           </div>
+
+          <div className="mt-4">
+            <label className={labelClass}>Steam ID64 (eigener Spieler)</label>
+            <input
+              type="text"
+              value={form.steamId}
+              onChange={(e) => setForm((f) => ({ ...f, steamId: e.target.value }))}
+              placeholder="76561198012345678"
+              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/25 focus:outline-none focus:border-orange-500/50 transition-colors font-mono"
+            />
+            <p className="text-white/25 text-xs mt-2">
+              Wird automatisch ausgefüllt, wenn du dein FACEIT-Konto verbindest. Wird verwendet, um in Demo-Replays zwischen eigenem Team und Gegnern zu unterscheiden.
+            </p>
+          </div>
         </Section>
 
         {/* ── CS2 Replay-Ordner ────────────────────────────────────── */}
