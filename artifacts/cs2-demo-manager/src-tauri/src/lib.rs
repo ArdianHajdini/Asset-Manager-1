@@ -373,12 +373,15 @@ pub mod commands {
                 }
             }
 
-            // ── FALLBACK 1: open CS2 via Steam URI *without* +playdemo ─────
-            // Steam protocol cannot reliably pass +commands to CS2.
-            // We only open the game — user pastes the console command.
-            let uri = "steam://rungameid/730".to_string();
+            // ── FALLBACK 1: steam://rungame/730/+playdemo%20replays/<name> ─
+            // Format mirrors the official Steam item-preview URI scheme:
+            //   steam://rungame/730/<steamid>/+command%20args
+            // For playdemo no steamid is needed, so the path is:
+            //   steam://rungame/730/+playdemo%20replays/<name>
+            // %20 is required — a literal space splits the URI in cmd.exe.
+            let uri = format!("steam://rungame/730/+playdemo%20{}", playdemo_arg);
             let raw_cmd = format!("/C start \"\" \"{}\"", uri);
-            eprintln!("[CS2DM] FALLBACK1 open-only URI: {}", uri);
+            eprintln!("[CS2DM] FALLBACK1 URI: {}", uri);
             let uri_spawn_ok = Command::new("cmd")
                 .raw_arg(&raw_cmd)
                 .creation_flags(CREATE_NO_WINDOW)
@@ -389,8 +392,8 @@ pub mod commands {
                 return Ok(LaunchResult {
                     status: "launched".to_string(),
                     command: Some(format!("cmd /C start \"\" \"{}\"", uri)),
-                    method: Some("steam_uri_open".to_string()),
-                    note: Some("CS2 über Steam-URI geöffnet. Demo bitte via Konsole (playdemo) starten.".to_string()),
+                    method: Some("steam_uri_playdemo".to_string()),
+                    note: Some("CS2 via Steam-URI mit +playdemo geöffnet. Falls Demo nicht startet: Konsole öffnen und Befehl einfügen.".to_string()),
                 });
             }
 
