@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 
 export function FaceitPage() {
   const { connection, isConnected, matches, isLoadingMatches, matchError, refreshMatches, setConnection, disconnect } = useFaceit();
-  const { settings, setStatus, refreshDemos } = useApp();
+  const { settings, setStatus, refreshDemos, updateSettings } = useApp();
 
   // Connection form state
   const [nickname, setNickname] = useState("");
@@ -66,6 +66,10 @@ export function FaceitPage() {
     try {
       const conn = await connectWithApiKey(nickname.trim(), apiKey.trim());
       setConnection(conn);
+      // Persist the Steam ID64 to settings so DemoCard can use it for team detection
+      if (conn.steamId) {
+        updateSettings({ steamId: conn.steamId });
+      }
     } catch (err) {
       setConnectError(String(err));
     } finally {
