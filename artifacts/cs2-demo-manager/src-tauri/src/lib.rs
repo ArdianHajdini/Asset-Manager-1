@@ -622,6 +622,111 @@ pub mod commands {
         }
     }
 
+    // ── Command — Downloads-Ordner scannen ───────────
+
+    /// Scan a folder for demo files (.dem, .dem.gz, .dem.zst).
+    /// Returns a DemoEntry for each found file (filename, filepath, size, modifiedAt).
+    /// Unlike list_demos() which only scans .dem files, this also returns compressed demos.
+    #[tauri::command]
+    pub fn scan_downloads(directory: String) -> Result<Vec<DemoEntry>, String> {
+        let dir = std::path::Path::new(&directory);
+        if !dir.exists() {
+            // Return empty instead of error — user may not have set a folder yet
+            return Ok(vec![]);
+        }
+        if !dir.is_dir() {
+            return Err(format!("Kein Ordner: {}", directory));
+        }
+
+        let mut entries = Vec::new();
+        let read_dir = fs::read_dir(dir)
+            .map_err(|e| format!("Ordner konnte nicht gelesen werden: {}", e))?;
+
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            // Match .dem, .dem.gz, .dem.zst only
+            if !name.ends_with(".dem")
+                && !name.ends_with(".dem.gz")
+                && !name.ends_with(".dem.zst")
+            {
+                continue;
+            }
+
+            // Build display name by stripping all demo-related suffixes
+            let display_name = {
+                let s = name.as_str();
+                let s = s.strip_suffix(".zst").unwrap_or(s);
+                let s = s.strip_suffix(".gz").unwrap_or(s);
+                let s = s.strip_suffix(".dem").unwrap_or(s);
+                s.to_string()
+            };
+
+            let directory_str = path
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let modified_at = file_modified_iso(&path);
+
+            entries.push(DemoEntry {
+                filename: name,
+                display_name,
+                filepath: path.to_string_lossy().to_string(),
+                directory: directory_str,
+                size,
+                modified_at,
+            });
+        }
+
+        // Newest files first
+        entries.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+        Ok(entries)
+    }
+
+    /// Detect the Windows Downloads folder for the current user.
+    /// Returns the path if found, or None if it cannot be determined.
+    #[tauri::command]
+    pub fn detect_downloads_folder() -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            // Primary: USERPROFILE\Downloads
+            if let Ok(profile) = std::env::var("USERPROFILE") {
+                let candidate = PathBuf::from(profile).join("Downloads");
+                if candidate.exists() {
+                    return Some(candidate.to_string_lossy().to_string());
+                }
+            }
+            // Fallback: HOMEDRIVE + HOMEPATH + \Downloads
+            if let (Ok(drive), Ok(home)) =
+                (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH"))
+            {
+                let candidate = PathBuf::from(format!("{}{}", drive, home)).join("Downloads");
+                if candidate.exists() {
+                    return Some(candidate.to_string_lossy().to_string());
+                }
+            }
+            None
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            if let Ok(home) = std::env::var("HOME") {
+                let candidate = PathBuf::from(home).join("Downloads");
+                if candidate.exists() {
+                    return Some(candidate.to_string_lossy().to_string());
+                }
+            }
+            None
+        }
+    }
+
     // ── Command — FACEIT demo download ───────────────
 
     #[tauri::command]
@@ -756,6 +861,8 @@ pub fn run() {
             commands::get_file_info,
             commands::is_cs2_running,
             commands::download_demo,
+            commands::scan_downloads,
+            commands::detect_downloads_folder,
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten der Anwendung");
