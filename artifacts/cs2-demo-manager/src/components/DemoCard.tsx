@@ -191,7 +191,7 @@ export function DemoCard({ demo }: DemoCardProps) {
                   damit die Demo automatisch geladen werden kann.
                 </p>
                 <p className="text-white/40 text-xs mt-2">
-                  Starte CS2, warte bis das Hauptmenü geladen ist, und klicke dann erneut auf „In CS2 öffnen".
+                  Starte CS2, warte bis das Hauptmenü geladen ist, und klicke dann erneut auf „In CS2 ansehen".
                 </p>
               </div>
             </div>
@@ -298,7 +298,7 @@ export function DemoCard({ demo }: DemoCardProps) {
                 ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 : <Play className="w-3.5 h-3.5" />
               }
-              {launching ? "Prüft CS2..." : "In CS2 öffnen"}
+              {launching ? "Prüft CS2..." : "In CS2 ansehen"}
             </button>
 
             <button
