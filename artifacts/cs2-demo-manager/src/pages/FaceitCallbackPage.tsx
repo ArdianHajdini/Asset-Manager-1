@@ -12,10 +12,12 @@ import { useLocation } from "wouter";
 import { Loader2, CheckCircle2, AlertCircle } from "lucide-react";
 import { completeOAuthFlow } from "../services/faceitAuthService";
 import { useFaceit } from "../context/FaceitContext";
+import { useApp } from "../context/AppContext";
 
 export function FaceitCallbackPage() {
   const [, navigate] = useLocation();
   const { setConnection } = useFaceit();
+  const { updateSettings } = useApp();
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
 
@@ -41,6 +43,9 @@ export function FaceitCallbackPage() {
       try {
         const conn = await completeOAuthFlow(code, state);
         setConnection(conn);
+        if (conn.steamId) {
+          await updateSettings({ steamId: conn.steamId });
+        }
         setStatus("success");
         setTimeout(() => navigate("/faceit"), 1500);
       } catch (err) {
