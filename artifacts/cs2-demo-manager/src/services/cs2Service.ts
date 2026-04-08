@@ -10,15 +10,14 @@
  *   Correct command: playdemo replays/mydemo   (no .dem extension)
  *
  * Native launch hierarchy (Tauri / Windows desktop app):
- *   PRIMARY  → Rust executes:
- *              cmd /C start steam://rungameid/730//+playdemo "replays/<name>"
- *              This is the correct Steam URI format for CS2 demo launch:
- *              - rungameid (not rungame)
- *              - 730// (double slash, empty user-id field)
- *              - demo name quoted inside the URI
- *              Steam receives the URI and launches CS2 with +playdemo.
- *   FALLBACK → Rust spawns cs2.exe directly with +playdemo arg
- *   LAST     → returns "clipboard_fallback" — frontend copies the console cmd
+ *   PRIMARY  → Rust finds steam.exe (7 dirs up from cs2.exe) and runs:
+ *              steam.exe -applaunch 730 +playdemo replays/<name>
+ *              Most reliable — no URI parsing, no shell space-splitting.
+ *   FALLBACK1 → Rust runs:
+ *              cmd /C start "" "steam://rungameid/730//+playdemo%20replays/<name>"
+ *              Space is %20 (URL-encoded). A literal space splits the URI.
+ *   FALLBACK2 → Rust spawns cs2.exe directly with +playdemo arg.
+ *   LAST      → returns "clipboard_fallback" — frontend copies the console cmd.
  *
  * Browser (dev preview only):
  *   Opens the Steam URI via window.open. Falls back to clipboard copy.
@@ -151,13 +150,14 @@ export function buildPlaydemoCommand(playdemoArg: string): string {
 /**
  * Build the correct Steam URI for launching CS2 with a demo.
  *
- * Correct format: steam://rungameid/730//+playdemo "replays/<name>"
+ * Correct format: steam://rungameid/730//+playdemo%20replays/<name>
  *   - rungameid  (NOT rungame — rungame is the legacy/wrong variant)
  *   - 730//      (double slash = empty user-id field, NOT 730/0/)
- *   - demo arg quoted with " inside the URI
+ *   - %20 instead of a literal space — a literal space causes cmd.exe
+ *     and ShellExecute to split the URI, losing the demo name argument
  */
 export function buildSteamLaunchUri(playdemoArg: string): string {
-  return `steam://rungameid/730//+playdemo "${playdemoArg}"`;
+  return `steam://rungameid/730//+playdemo%20${playdemoArg}`;
 }
 
 /**
