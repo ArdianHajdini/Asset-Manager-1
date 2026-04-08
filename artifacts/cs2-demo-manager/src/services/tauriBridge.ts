@@ -40,7 +40,7 @@ export interface TauriDemoEntry {
 export interface TauriLaunchResult {
   status: "launched" | "clipboard_fallback";
   command?: string;
-  method?: "steam_exe_applaunch" | "steam_uri_open" | "direct_cs2" | "none";
+  method?: "steam_exe_applaunch" | "steam_uri_playdemo" | "direct_cs2" | "none";
   note?: string;
 }
 
