@@ -12,6 +12,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   steamPath: "",
   autoExtractGz: true,
   autoAddToLibrary: true,
+  // Downloads-Ordner: auto-detected from Windows USERPROFILE if left empty.
+  // User can override in settings.
+  downloadsFolder: "",
 };
 
 export function loadDemos(): Demo[] {
