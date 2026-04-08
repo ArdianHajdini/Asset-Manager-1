@@ -17,6 +17,12 @@ export interface AppSettings {
   autoAddToLibrary: boolean;
   /** Folder to scan for downloaded demo files (.dem, .dem.gz, .dem.zst) */
   downloadsFolder: string;
+  /**
+   * Steam ID64 of the local player (e.g. "76561198012345678").
+   * Filled automatically when connecting via FACEIT (game_player_id).
+   * Used by the demo parser to identify the user's own team.
+   */
+  steamId: string;
 }
 
 export type CS2Status = "found" | "not_found" | "unknown";
