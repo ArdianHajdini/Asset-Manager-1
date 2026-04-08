@@ -1,7 +1,9 @@
 /**
  * FaceitContext — global state for FACEIT account connection and match cache.
  */
-
+// Vite Fast Refresh: this file exports both a Provider component and a hook,
+// which breaks partial HMR. Force a full page reload on every change.
+/* @refresh reset */
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
 import type { FaceitConnection, FaceitHistoryItem, MatchDownloadState } from "../types/faceit";
 import { loadConnection, clearConnection } from "../services/faceitAuthService";
