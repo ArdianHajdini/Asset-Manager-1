@@ -1,13 +1,16 @@
 import { useState } from "react";
-import { RefreshCw, LogOut, Loader2, AlertCircle, User, Shield, Key, Wifi, WifiOff, Info } from "lucide-react";
+import { RefreshCw, LogOut, Loader2, AlertCircle, User, Shield, Key, Wifi, WifiOff, Info, Download } from "lucide-react";
 import { useFaceit } from "../context/FaceitContext";
+import { useApp } from "../context/AppContext";
 import { MatchCard } from "../components/MatchCard";
 import { connectWithApiKey, startOAuthFlow, FACEIT_CLIENT_ID } from "../services/faceitAuthService";
 import { isTauri } from "../services/tauriBridge";
+import { scanDownloadsFolder, processCandidates } from "../services/downloadsService";
 import { cn } from "@/lib/utils";
 
 export function FaceitPage() {
   const { connection, isConnected, matches, isLoadingMatches, matchError, refreshMatches, setConnection, disconnect } = useFaceit();
+  const { settings, setStatus, refreshDemos } = useApp();
 
   // Connection form state
   const [nickname, setNickname] = useState("");
@@ -15,6 +18,43 @@ export function FaceitPage() {
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [showApiKeyForm, setShowApiKeyForm] = useState(false);
+  const [scanning, setScanning] = useState(false);
+
+  async function handleScanDownloads() {
+    const folder = settings.downloadsFolder;
+    const replayFolder = settings.demoDirectory;
+
+    if (!folder) {
+      setStatus({ type: "error", message: "Kein Downloads-Ordner konfiguriert. Bitte in den Einstellungen festlegen." });
+      return;
+    }
+    if (!replayFolder) {
+      setStatus({ type: "error", message: "Kein CS2 Replay-Ordner konfiguriert. Bitte CS2 in den Einstellungen erkennen lassen." });
+      return;
+    }
+
+    setScanning(true);
+    try {
+      const { candidates, errors } = await scanDownloadsFolder(folder);
+      if (errors.length > 0) { setStatus({ type: "error", message: errors[0] }); return; }
+      if (candidates.length === 0) {
+        setStatus({ type: "info", message: "Im Downloads-Ordner wurde keine neue Demo gefunden." });
+        return;
+      }
+      setStatus({ type: "info", message: `${candidates.length} Demo(s) gefunden — wird verarbeitet...` });
+      const result = await processCandidates(candidates, replayFolder);
+      await refreshDemos();
+      const parts: string[] = [];
+      if (result.processed.length > 0) parts.push(`${result.processed.length} Demo(s) wurden im Replay-Ordner gespeichert.`);
+      if (result.skipped.length > 0) parts.push(`${result.skipped.length} bereits vorhanden.`);
+      if (result.errors.length > 0) parts.push(`${result.errors.length} Fehler.`);
+      setStatus({ type: result.processed.length > 0 ? "success" : "info", message: parts.join(" ") || "Keine neuen Demos." });
+    } catch (err) {
+      setStatus({ type: "error", message: String(err) });
+    } finally {
+      setScanning(false);
+    }
+  }
 
   async function handleApiKeyConnect() {
     if (!nickname.trim() || !apiKey.trim()) {
@@ -216,6 +256,18 @@ export function FaceitPage() {
 
         {/* Right actions */}
         <div className="flex items-center gap-2">
+          {/* Downloads-Ordner scannen (Tauri only) */}
+          {isTauri() && (
+            <button
+              onClick={handleScanDownloads}
+              disabled={scanning}
+              title="Downloads-Ordner nach Demos durchsuchen"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-orange-500/30 bg-orange-500/8 hover:bg-orange-500/18 text-orange-300/70 hover:text-orange-300 text-xs font-medium transition-all disabled:opacity-50"
+            >
+              {scanning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              Downloads scannen
+            </button>
+          )}
           <button
             onClick={refreshMatches}
             disabled={isLoadingMatches}
