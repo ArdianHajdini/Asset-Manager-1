@@ -1,24 +1,27 @@
 /**
  * cs2Service.ts — CS2 and Steam integration.
  *
- * Launch flow (correct CS2 behavior):
+ * Launch flow:
  *   CS2's playdemo command accepts RELATIVE paths from its working directory.
  *   The working directory is: <Steam>/steamapps/common/Counter-Strike Global
  *   Offensive/game/csgo/
  *   The replays folder lives inside that as "replays/".
  *
  *   Correct command: playdemo replays/mydemo   (no .dem extension)
- *   Wrong (old):     playdemo "C:\CS2Demos\mydemo.dem"
  *
- * What was wrong before this fix:
- *   - detect_steam_path returned the cs2.exe path, not the Steam root → auto-detect broken
- *   - launch_cs2 passed full absolute Windows paths to +playdemo → CS2 ignored them
- *   - Default demoDirectory was C:\CS2Demos → demos never reachable via playdemo
+ * Native launch hierarchy (Tauri / Windows desktop app):
+ *   PRIMARY  → Rust executes:
+ *              cmd /C start steam://rungameid/730//+playdemo "replays/<name>"
+ *              This is the correct Steam URI format for CS2 demo launch:
+ *              - rungameid (not rungame)
+ *              - 730// (double slash, empty user-id field)
+ *              - demo name quoted inside the URI
+ *              Steam receives the URI and launches CS2 with +playdemo.
+ *   FALLBACK → Rust spawns cs2.exe directly with +playdemo arg
+ *   LAST     → returns "clipboard_fallback" — frontend copies the console cmd
  *
- * Now:
- *   - detect_steam_path returns the Steam root directory
- *   - Demos are saved into <Steam>/…/csgo/replays (the CS2 replay folder)
- *   - playdemo argument is always "replays/FILENAME_WITHOUT_EXT"
+ * Browser (dev preview only):
+ *   Opens the Steam URI via window.open. Falls back to clipboard copy.
  */
 
 import type { CS2Status } from "../types/demo";
@@ -86,7 +89,7 @@ export async function detectCS2Path(): Promise<{
 } | null> {
   if (!isTauri()) return null;
   try {
-    const steamPath = await tauriDetectSteamPath(); // now returns Steam root
+    const steamPath = await tauriDetectSteamPath();
     if (!steamPath) return null;
     const cs2Path = `${steamPath}\\${CS2_EXE_RELATIVE}`;
     const replayFolder = await tauriGetReplayFolder(steamPath);
@@ -97,7 +100,7 @@ export async function detectCS2Path(): Promise<{
 }
 
 /**
- * Given a Steam root path, create and return the CS2 replay folder.
+ * Given a Steam root path, return the CS2 replay folder path.
  * Returns null if unavailable (browser or error).
  */
 export async function detectReplayFolder(steamPath: string): Promise<string | null> {
@@ -131,7 +134,6 @@ export async function copyToClipboard(text: string): Promise<boolean> {
  * CS2 resolves this relative to its csgo working directory.
  *
  * "mydemo.dem"  →  "replays/mydemo"
- * "FACEIT_de_dust2_abc12345.dem"  →  "replays/FACEIT_de_dust2_abc12345"
  */
 export function buildPlaydemoArg(filename: string): string {
   const base = filename.replace(/\.dem$/i, "");
@@ -139,35 +141,30 @@ export function buildPlaydemoArg(filename: string): string {
 }
 
 /**
- * Build the CS2 console command shown in the manual fallback UI.
- * Accepts the playdemo arg (from buildPlaydemoArg).
- *
- * Example output: "playdemo replays/mydemo"
+ * Build the CS2 console command for manual fallback.
+ * Example: "playdemo replays/mydemo"
  */
 export function buildPlaydemoCommand(playdemoArg: string): string {
   return `playdemo ${playdemoArg}`;
 }
 
+/**
+ * Build the correct Steam URI for launching CS2 with a demo.
+ *
+ * Correct format: steam://rungameid/730//+playdemo "replays/<name>"
+ *   - rungameid  (NOT rungame — rungame is the legacy/wrong variant)
+ *   - 730//      (double slash = empty user-id field, NOT 730/0/)
+ *   - demo arg quoted with " inside the URI
+ */
 export function buildSteamLaunchUri(playdemoArg: string): string {
-  return `steam://rungame/730/0/+playdemo+"${playdemoArg}"`;
+  return `steam://rungameid/730//+playdemo "${playdemoArg}"`;
 }
 
 /**
  * Launch CS2 with the given demo.
  *
  * @param demoFilename  The .dem filename (e.g. "mydemo.dem").
- *                      The relative playdemo arg is derived automatically.
  * @param cs2Path       Full path to cs2.exe.
- *
- * In Tauri (desktop):
- *   PRIMARY  → Steam URI via `cmd /C start steam://rungame/730/0/+playdemo+replays/DEMO`
- *              ShellExecute hands off to the Steam client; Steam launches CS2.
- *   FALLBACK → spawn cs2.exe directly with +playdemo arg (if Steam URI fails).
- *   LAST     → returns "clipboard_fallback" — frontend copies the console cmd.
- *
- * In browser:
- *   - Opens Steam URI steam://rungame/730/... via window.open (Steam handles it).
- *   - Falls back to clipboard copy of the playdemo command.
  */
 export async function launchDemoInCS2(
   demoFilename: string,
@@ -175,10 +172,12 @@ export async function launchDemoInCS2(
 ): Promise<"launched" | "clipboard_fallback"> {
   const playdemoArg = buildPlaydemoArg(demoFilename);
   const consoleCmd = buildPlaydemoCommand(playdemoArg);
+  const steamUri = buildSteamLaunchUri(playdemoArg);
 
   console.log("[CS2DM] Launch:", {
     demoFilename,
     playdemoArg,
+    steamUri,
     consoleCmd,
     cs2Path,
     mode: isTauri() ? "tauri" : "browser",
@@ -186,13 +185,18 @@ export async function launchDemoInCS2(
 
   if (isTauri()) {
     try {
-      // PRIMARY:  Steam URI via cmd /C start (Rust)
-      // FALLBACK: direct cs2.exe spawn (Rust)
-      // LAST:     clipboard fallback
+      // Rust handles the full launch hierarchy:
+      //   PRIMARY  → cmd /C start steam://rungameid/730//+playdemo "replays/<name>"
+      //   FALLBACK → spawn cs2.exe directly with +playdemo arg
+      //   LAST     → returns status "clipboard_fallback"
+      console.log("[CS2DM] Calling Rust launch_cs2...");
       const result = await tauriLaunchCS2(cs2Path, playdemoArg);
-      console.log("[CS2DM] Launch result (Tauri):", result);
+      console.log("[CS2DM] Rust result:", result);
 
-      if (result.status === "gestartet") return "launched";
+      if (result.status === "launched") {
+        console.log("[CS2DM] Steam launch succeeded:", result.command);
+        return "launched";
+      }
 
       // status === "clipboard_fallback"
       const cmd = result.command ?? consoleCmd;
@@ -206,11 +210,10 @@ export async function launchDemoInCS2(
     }
   }
 
-  // Browser: open steam:// URI — Steam handles it
-  const uri = buildSteamLaunchUri(playdemoArg);
-  console.log("[CS2DM] Launch (browser), opening URI:", uri);
+  // Browser mode: open Steam URI via window.open
+  console.log("[CS2DM] Browser mode, opening Steam URI:", steamUri);
   try {
-    window.open(uri, "_blank");
+    window.open(steamUri, "_blank");
     return "launched";
   } catch {
     await copyToClipboard(consoleCmd);

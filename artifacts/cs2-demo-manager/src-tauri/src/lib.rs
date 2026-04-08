@@ -371,7 +371,7 @@ pub mod commands {
 
             if steam_ok {
                 return Ok(LaunchResult {
-                    status: "gestartet".to_string(),
+                    status: "launched".to_string(),
                     command: Some(cmd_debug),
                 });
             }
@@ -388,7 +388,7 @@ pub mod commands {
                 eprintln!("[CS2DM] Direct cs2.exe ok: {}", direct_ok);
                 if direct_ok {
                     return Ok(LaunchResult {
-                        status: "gestartet".to_string(),
+                        status: "launched".to_string(),
                         command: Some(console_cmd),
                     });
                 }

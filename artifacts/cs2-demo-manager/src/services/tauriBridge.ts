@@ -38,8 +38,9 @@ export interface TauriDemoEntry {
 }
 
 export interface TauriLaunchResult {
-  // Rust returns "gestartet" on success, "clipboard_fallback" when all launch methods fail
-  status: "gestartet" | "clipboard_fallback";
+  // "launched" = Steam (or direct cs2.exe) was successfully spawned
+  // "clipboard_fallback" = all launch methods failed; command contains the console cmd to paste
+  status: "launched" | "clipboard_fallback";
   command?: string;
 }
 
