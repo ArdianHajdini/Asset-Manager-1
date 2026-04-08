@@ -122,6 +122,11 @@ export interface FaceitConnection {
   skillLevel?: number;
   /** ELO rating */
   elo?: number;
+  /**
+   * Steam ID64 for CS2 (from games.cs2.game_player_id in the FACEIT player profile).
+   * Used by the demo parser to identify the user's own team in replays.
+   */
+  steamId?: string;
   /** How the user authenticated */
   authMethod: FaceitAuthMethod;
   /** FACEIT Data API key — always present for api_key method */
