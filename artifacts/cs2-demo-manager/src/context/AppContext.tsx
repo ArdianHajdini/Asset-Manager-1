@@ -8,6 +8,7 @@ import {
   deleteDemoFull,
 } from "../services/demoService";
 import { isTauri } from "../services/tauriBridge";
+import { detectCS2Path } from "../services/cs2Service";
 
 interface AppContextValue {
   demos: Demo[];
@@ -55,9 +56,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Initial load
+  // Initial load + first-time auto-detection of CS2 paths
   useEffect(() => {
     refreshDemos();
+
+    // Auto-detect Steam / CS2 / replay folder when the app is opened for the
+    // first time (no paths configured yet, or old C:\CS2Demos default).
+    if (isTauri()) {
+      const s = settingsRef.current;
+      const needsDetect =
+        !s.cs2Path &&
+        (!s.demoDirectory || s.demoDirectory === "C:\\CS2Demos");
+
+      if (needsDetect) {
+        detectCS2Path().then((result) => {
+          if (result) {
+            setSettings((prev) => {
+              const next = {
+                ...prev,
+                steamPath: result.steamPath,
+                cs2Path: result.cs2Path,
+                demoDirectory: result.replayFolder,
+              };
+              saveSettings(next);
+              return next;
+            });
+          }
+        });
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

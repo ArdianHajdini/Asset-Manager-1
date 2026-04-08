@@ -5,7 +5,7 @@ import {
 import type { Demo } from "../types/demo";
 import { useApp } from "../context/AppContext";
 import { formatFileSize, formatDate, openDemoFolder } from "../services/demoService";
-import { launchDemoInCS2, buildPlaydemoCommand, copyToClipboard, getCS2Status } from "../services/cs2Service";
+import { launchDemoInCS2, buildPlaydemoCommand, buildPlaydemoArg, copyToClipboard, getCS2Status } from "../services/cs2Service";
 import { isTauri } from "../services/tauriBridge";
 import { cn } from "@/lib/utils";
 
@@ -33,13 +33,12 @@ export function DemoCard({ demo }: DemoCardProps) {
     }
     setLaunching(true);
     try {
-      const result = await launchDemoInCS2(demo.filepath, settings.cs2Path);
+      // Pass filename — cs2Service derives "replays/FILENAME" automatically.
+      const result = await launchDemoInCS2(demo.filename, settings.cs2Path);
       if (result === "launched") {
         setStatus({ type: "success", message: `Demo gestartet: ${demo.displayName}` });
         setShowFallback(false);
       } else {
-        // Clipboard fallback — show manual steps
-        await copyToClipboard(buildPlaydemoCommand(demo.filepath));
         setShowFallback(true);
         setStatus({
           type: "info",
@@ -66,7 +65,7 @@ export function DemoCard({ demo }: DemoCardProps) {
   }
 
   async function handleCopyCommand() {
-    const cmd = buildPlaydemoCommand(demo.filepath);
+    const cmd = buildPlaydemoCommand(buildPlaydemoArg(demo.filename));
     const ok = await copyToClipboard(cmd);
     if (ok) {
       setStatus({ type: "success", message: "Befehl in Zwischenablage kopiert." });
@@ -224,7 +223,7 @@ export function DemoCard({ demo }: DemoCardProps) {
                   <li>Drücke Enter</li>
                 </ol>
                 <div className="mt-2 bg-black/30 rounded px-2 py-1 font-mono text-xs text-white/60 truncate">
-                  {buildPlaydemoCommand(demo.filepath)}
+                  {buildPlaydemoCommand(buildPlaydemoArg(demo.filename))}
                 </div>
               </div>
             </div>

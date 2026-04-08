@@ -5,7 +5,9 @@ const DEMOS_KEY = "cs2dm_demos";
 const SETTINGS_KEY = "cs2dm_settings";
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  demoDirectory: "C:\\CS2Demos",
+  // Empty by default — the app auto-detects the CS2 replay folder on first launch.
+  // Once detected: <Steam>/steamapps/common/Counter-Strike Global Offensive/game/csgo/replays
+  demoDirectory: "",
   cs2Path: "",
   steamPath: "",
   autoExtractGz: true,

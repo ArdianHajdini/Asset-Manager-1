@@ -304,36 +304,45 @@ pub mod commands {
     #[tauri::command]
     pub fn launch_cs2(
         cs2_exe_path: String,
-        demo_path: String,
+        // Relative playdemo argument, e.g. "replays/mydemo" (no .dem extension).
+        // CS2 resolves this relative to its csgo game directory, so the demo
+        // must live in <Steam>/steamapps/…/game/csgo/replays/.
+        playdemo_arg: String,
     ) -> Result<LaunchResult, String> {
         let exe = PathBuf::from(&cs2_exe_path);
         if !exe.exists() {
-            return Err(format!(
-                "CS2 nicht gefunden unter: {}",
-                cs2_exe_path
-            ));
+            return Err(format!("CS2 nicht gefunden unter: {}", cs2_exe_path));
         }
-        let demo = PathBuf::from(&demo_path);
-        if !demo.exists() {
-            return Err(format!("Demo-Datei nicht gefunden: {}", demo_path));
-        }
-
-        let playdemo_arg = format!(
-            "+playdemo \"{}\"",
-            demo.to_string_lossy().replace('\\', "/")
+        let cmd_str = format!(
+            "\"{}\" +playdemo \"{}\"",
+            cs2_exe_path, playdemo_arg
         );
-        let cmd_str = format!("{} {}", cs2_exe_path, playdemo_arg);
-
         Command::new(&exe)
             .arg("+playdemo")
-            .arg(demo.to_string_lossy().as_ref())
+            .arg(&playdemo_arg)
             .spawn()
             .map_err(|e| format!("CS2 konnte nicht gestartet werden: {}", e))?;
-
         Ok(LaunchResult {
             status: "gestartet".to_string(),
-            command: Some(cmd_str),
+            command: Some(format!("playdemo {}", playdemo_arg)),
         })
+    }
+
+    /// Create (if needed) and return the CS2 replay folder path.
+    /// <steam_path>/steamapps/common/Counter-Strike Global Offensive/game/csgo/replays
+    #[tauri::command]
+    pub fn get_replay_folder(steam_path: String) -> Result<String, String> {
+        let folder = PathBuf::from(&steam_path)
+            .join("steamapps")
+            .join("common")
+            .join("Counter-Strike Global Offensive")
+            .join("game")
+            .join("csgo")
+            .join("replays");
+        fs::create_dir_all(&folder).map_err(|e| {
+            format!("CS2 Replay-Ordner konnte nicht erstellt werden: {}", e)
+        })?;
+        Ok(folder.to_string_lossy().to_string())
     }
 
     #[tauri::command]
@@ -341,6 +350,8 @@ pub mod commands {
         PathBuf::from(&cs2_path).exists()
     }
 
+    /// Returns the Steam root installation directory (e.g. C:\Program Files (x86)\Steam).
+    /// Returns None when Steam or CS2 cannot be found.
     #[tauri::command]
     pub fn detect_steam_path() -> Option<String> {
         #[cfg(target_os = "windows")]
@@ -359,7 +370,9 @@ pub mod commands {
                         .join("win64")
                         .join("cs2.exe");
                     if cs2.exists() {
-                        return Some(cs2.to_string_lossy().to_string());
+                        // Return the Steam ROOT, not the cs2.exe path.
+                        // The frontend derives cs2.exe and the replays folder from this.
+                        return Some(path);
                     }
                 }
             }
@@ -506,6 +519,7 @@ pub fn run() {
             commands::rename_demo_file,
             commands::open_folder,
             commands::launch_cs2,
+            commands::get_replay_folder,
             commands::check_cs2_path,
             commands::detect_steam_path,
             commands::get_file_info,

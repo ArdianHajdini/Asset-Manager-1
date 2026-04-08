@@ -87,15 +87,25 @@ export async function tauriOpenFolder(path: string): Promise<void> {
 }
 
 /**
- * Launch CS2 with a demo file. Tries Steam URI first, then direct cs2.exe launch.
- * Returns a result indicating whether the launch succeeded or a clipboard fallback is needed.
+ * Launch CS2 with a relative playdemo argument.
+ * playdemoArg should be in the form "replays/mydemo" (no .dem extension).
+ * CS2 resolves this relative to its csgo game directory.
  */
 export async function tauriLaunchCS2(
   cs2ExePath: string,
-  demoPath: string
+  playdemoArg: string,
 ): Promise<TauriLaunchResult> {
   const invoke = await getInvoke();
-  return invoke<TauriLaunchResult>("launch_cs2", { cs2ExePath, demoPath });
+  return invoke<TauriLaunchResult>("launch_cs2", { cs2ExePath, playdemoArg });
+}
+
+/**
+ * Given the Steam root path, derive and create the CS2 replay folder if needed.
+ * Returns the absolute path to <Steam>/steamapps/.../game/csgo/replays.
+ */
+export async function tauriGetReplayFolder(steamPath: string): Promise<string> {
+  const invoke = await getInvoke();
+  return invoke<string>("get_replay_folder", { steamPath });
 }
 
 /** Check whether the given cs2.exe path actually exists. */

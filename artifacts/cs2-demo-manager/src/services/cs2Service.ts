@@ -1,15 +1,46 @@
 /**
  * cs2Service.ts — CS2 and Steam integration.
  *
- * When running inside Tauri (desktop): uses real Rust commands via tauriBridge.
- * When running in a browser: uses window.open() Steam URI with clipboard fallback.
+ * Launch flow (correct CS2 behavior):
+ *   CS2's playdemo command accepts RELATIVE paths from its working directory.
+ *   The working directory is: <Steam>/steamapps/common/Counter-Strike Global
+ *   Offensive/game/csgo/
+ *   The replays folder lives inside that as "replays/".
+ *
+ *   Correct command: playdemo replays/mydemo   (no .dem extension)
+ *   Wrong (old):     playdemo "C:\CS2Demos\mydemo.dem"
+ *
+ * What was wrong before this fix:
+ *   - detect_steam_path returned the cs2.exe path, not the Steam root → auto-detect broken
+ *   - launch_cs2 passed full absolute Windows paths to +playdemo → CS2 ignored them
+ *   - Default demoDirectory was C:\CS2Demos → demos never reachable via playdemo
+ *
+ * Now:
+ *   - detect_steam_path returns the Steam root directory
+ *   - Demos are saved into <Steam>/…/csgo/replays (the CS2 replay folder)
+ *   - playdemo argument is always "replays/FILENAME_WITHOUT_EXT"
  */
 
 import type { CS2Status } from "../types/demo";
-import { isTauri, tauriLaunchCS2, tauriCheckCS2Path, tauriDetectSteamPath } from "./tauriBridge";
+import {
+  isTauri,
+  tauriLaunchCS2,
+  tauriCheckCS2Path,
+  tauriDetectSteamPath,
+  tauriGetReplayFolder,
+} from "./tauriBridge";
 
+// ─────────────────────────────────────────
+//  Path constants
+// ─────────────────────────────────────────
+
+/** Relative path from Steam root to cs2.exe */
 export const CS2_EXE_RELATIVE =
   "steamapps\\common\\Counter-Strike Global Offensive\\game\\bin\\win64\\cs2.exe";
+
+/** Relative path from Steam root to the CS2 replay folder */
+export const CS2_REPLAY_RELATIVE =
+  "steamapps\\common\\Counter-Strike Global Offensive\\game\\csgo\\replays";
 
 export const COMMON_STEAM_PATHS = [
   "C:\\Program Files (x86)\\Steam",
@@ -22,22 +53,12 @@ export const COMMON_STEAM_PATHS = [
 //  Status helpers
 // ─────────────────────────────────────────
 
-/**
- * Determine if CS2 appears to be configured.
- * - "found"     → path is set and ends with .exe
- * - "not_found" → path is set but doesn't look valid
- * - "unknown"   → no path configured yet
- */
 export function getCS2Status(cs2Path: string): CS2Status {
   if (!cs2Path || cs2Path.trim() === "") return "unknown";
   if (cs2Path.toLowerCase().endsWith(".exe")) return "found";
   return "not_found";
 }
 
-/**
- * When running in Tauri, actually checks whether the file exists on disk.
- * Falls back to string-based heuristic in browser mode.
- */
 export async function verifyCS2PathExists(cs2Path: string): Promise<boolean> {
   if (!cs2Path) return false;
   if (isTauri()) {
@@ -47,7 +68,6 @@ export async function verifyCS2PathExists(cs2Path: string): Promise<boolean> {
       return false;
     }
   }
-  // Browser fallback: just check the string looks valid
   return cs2Path.toLowerCase().endsWith(".exe");
 }
 
@@ -56,20 +76,34 @@ export async function verifyCS2PathExists(cs2Path: string): Promise<boolean> {
 // ─────────────────────────────────────────
 
 /**
- * Attempt to auto-detect Steam and CS2 paths.
- * In Tauri: asks the Rust backend to scan the filesystem.
- * In browser: always returns null (no filesystem access).
+ * Detect Steam root, derive cs2.exe path and the CS2 replay folder.
+ * Returns null if Steam / CS2 not found.
  */
 export async function detectCS2Path(): Promise<{
   steamPath: string;
   cs2Path: string;
+  replayFolder: string;
 } | null> {
   if (!isTauri()) return null;
   try {
-    const steamPath = await tauriDetectSteamPath();
+    const steamPath = await tauriDetectSteamPath(); // now returns Steam root
     if (!steamPath) return null;
     const cs2Path = `${steamPath}\\${CS2_EXE_RELATIVE}`;
-    return { steamPath, cs2Path };
+    const replayFolder = await tauriGetReplayFolder(steamPath);
+    return { steamPath, cs2Path, replayFolder };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Given a Steam root path, create and return the CS2 replay folder.
+ * Returns null if unavailable (browser or error).
+ */
+export async function detectReplayFolder(steamPath: string): Promise<string | null> {
+  if (!isTauri() || !steamPath) return null;
+  try {
+    return await tauriGetReplayFolder(steamPath);
   } catch {
     return null;
   }
@@ -89,56 +123,76 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 // ─────────────────────────────────────────
-//  Demo launch
+//  Demo launch helpers
 // ─────────────────────────────────────────
 
-export function buildPlaydemoCommand(demoFilepath: string): string {
-  return `playdemo "${demoFilepath}"`;
-}
-
-export function buildSteamLaunchUri(demoFilepath: string): string {
-  return `steam://rungame/730/0/+playdemo+"${demoFilepath}"`;
+/**
+ * Build the relative playdemo argument for a demo filename.
+ * CS2 resolves this relative to its csgo working directory.
+ *
+ * "mydemo.dem"  →  "replays/mydemo"
+ * "FACEIT_de_dust2_abc12345.dem"  →  "replays/FACEIT_de_dust2_abc12345"
+ */
+export function buildPlaydemoArg(filename: string): string {
+  const base = filename.replace(/\.dem$/i, "");
+  return `replays/${base}`;
 }
 
 /**
- * Launch CS2 with the given demo file.
+ * Build the CS2 console command shown in the manual fallback UI.
+ * Accepts the playdemo arg (from buildPlaydemoArg).
+ *
+ * Example output: "playdemo replays/mydemo"
+ */
+export function buildPlaydemoCommand(playdemoArg: string): string {
+  return `playdemo ${playdemoArg}`;
+}
+
+export function buildSteamLaunchUri(playdemoArg: string): string {
+  return `steam://rungame/730/0/+playdemo+"${playdemoArg}"`;
+}
+
+/**
+ * Launch CS2 with the given demo.
+ *
+ * @param demoFilename  The .dem filename (e.g. "mydemo.dem").
+ *                      The relative playdemo arg is derived automatically.
+ * @param cs2Path       Full path to cs2.exe.
  *
  * In Tauri (desktop):
- *   1. Tries Steam URI via OS URL handler
- *   2. Tries cs2.exe directly with +playdemo argument
- *   3. Returns "clipboard_fallback" so the UI shows manual steps
+ *   - Launches cs2.exe with +playdemo replays/FILENAME
+ *   - Returns "clipboard_fallback" with the console command if launch fails
  *
  * In browser:
- *   1. Tries window.open() with Steam URI
- *   2. Falls back to clipboard
- *
- * Returns "launched" or "clipboard_fallback".
+ *   - Opens Steam URI steam://rungame/730/... via window.open
+ *   - Falls back to clipboard copy of playdemo command
  */
 export async function launchDemoInCS2(
-  demoFilepath: string,
+  demoFilename: string,
   cs2Path: string
 ): Promise<"launched" | "clipboard_fallback"> {
+  const playdemoArg = buildPlaydemoArg(demoFilename);
+
   if (isTauri()) {
     try {
-      const result = await tauriLaunchCS2(cs2Path, demoFilepath);
+      const result = await tauriLaunchCS2(cs2Path, playdemoArg);
       if (result.status === "launched") return "launched";
-      // Copy the command to clipboard as part of the fallback
       if (result.command) {
         await copyToClipboard(result.command);
       }
       return "clipboard_fallback";
     } catch {
-      await copyToClipboard(buildPlaydemoCommand(demoFilepath));
+      await copyToClipboard(buildPlaydemoCommand(playdemoArg));
       return "clipboard_fallback";
     }
   }
 
-  // Browser fallback — try Steam URI via window.open
+  // Browser fallback — try Steam URI
   try {
-    window.open(buildSteamLaunchUri(demoFilepath), "_blank");
+    window.open(buildSteamLaunchUri(playdemoArg), "_blank");
     return "launched";
   } catch {
-    await copyToClipboard(buildPlaydemoCommand(demoFilepath));
+    await copyToClipboard(buildPlaydemoCommand(playdemoArg));
     return "clipboard_fallback";
   }
 }

@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { Save, FolderOpen, Crosshair, Info, Search, Loader2, CheckCircle2, RefreshCw } from "lucide-react";
+import { Save, FolderOpen, Crosshair, Info, Search, Loader2, CheckCircle2, RefreshCw, FolderSearch } from "lucide-react";
 import { useApp } from "../context/AppContext";
-import { detectCS2Path } from "../services/cs2Service";
-import { isTauri } from "../services/tauriBridge";
+import { detectCS2Path, detectReplayFolder } from "../services/cs2Service";
+import { isTauri, tauriOpenFolder } from "../services/tauriBridge";
 import { cn } from "@/lib/utils";
 
 export function SettingsPage() {
@@ -24,19 +24,56 @@ export function SettingsPage() {
     try {
       const result = await detectCS2Path();
       if (result) {
-        setForm((f) => ({ ...f, steamPath: result.steamPath, cs2Path: result.cs2Path }));
-        setStatus({ type: "success", message: `CS2 gefunden: ${result.cs2Path}` });
+        setForm((f) => ({
+          ...f,
+          steamPath: result.steamPath,
+          cs2Path: result.cs2Path,
+          demoDirectory: result.replayFolder,
+        }));
+        setStatus({
+          type: "success",
+          message: `CS2 gefunden. Replay-Ordner: ${result.replayFolder}`,
+        });
       } else {
         setStatus({
           type: "error",
-          message:
-            "CS2 wurde nicht automatisch gefunden. Bitte den Pfad manuell eintragen.",
+          message: "CS2 wurde nicht automatisch gefunden. Bitte den Pfad manuell eintragen.",
         });
       }
     } catch {
       setStatus({ type: "error", message: "Fehler bei der automatischen Erkennung." });
     } finally {
       setDetecting(false);
+    }
+  }
+
+  async function handleOpenReplayFolder() {
+    const folder = form.demoDirectory || settings.demoDirectory;
+    if (!folder) {
+      setStatus({ type: "error", message: "Kein Replay-Ordner konfiguriert." });
+      return;
+    }
+    try {
+      await tauriOpenFolder(folder);
+    } catch {
+      setStatus({ type: "info", message: `Ordner: ${folder}` });
+    }
+  }
+
+  async function handleDetectReplayFolder() {
+    const steam = form.steamPath;
+    if (!steam) {
+      setStatus({ type: "error", message: "Bitte erst den Steam-Pfad eintragen oder CS2 automatisch erkennen lassen." });
+      return;
+    }
+    try {
+      const folder = await detectReplayFolder(steam);
+      if (folder) {
+        setForm((f) => ({ ...f, demoDirectory: folder }));
+        setStatus({ type: "success", message: `Replay-Ordner gefunden: ${folder}` });
+      }
+    } catch {
+      setStatus({ type: "error", message: "Replay-Ordner konnte nicht ermittelt werden." });
     }
   }
 
@@ -135,34 +172,8 @@ export function SettingsPage() {
 
       <div className="space-y-6">
 
-        {/* Demo directory */}
-        <Section title="Demo-Ordner" icon={FolderOpen}>
-          <PathInput
-            label="Speicherort für importierte Demos"
-            value={form.demoDirectory}
-            onChange={(v) => setForm((f) => ({ ...f, demoDirectory: v }))}
-            placeholder="C:\CS2Demos"
-            onBrowseDir={() => handlePickFolder("demoDirectory")}
-            hint="Entpackte .dem-Dateien werden in diesem Ordner gespeichert."
-          />
-          {isTauri() && (
-            <button
-              onClick={handleRefreshLibrary}
-              disabled={refreshing}
-              className="mt-3 flex items-center gap-2 text-xs text-white/40 hover:text-white/70 transition-colors disabled:opacity-50"
-            >
-              {refreshing
-                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                : <RefreshCw className="w-3.5 h-3.5" />
-              }
-              Bibliothek jetzt neu einlesen
-            </button>
-          )}
-        </Section>
-
         {/* CS2 Path */}
         <Section title="CS2-Pfad" icon={Crosshair}>
-          {/* Auto-detect button */}
           {isTauri() && (
             <button
               onClick={handleAutoDetect}
@@ -219,12 +230,63 @@ export function SettingsPage() {
           </div>
         </Section>
 
+        {/* CS2 Replay-Ordner */}
+        <Section title="CS2 Replay-Ordner" icon={FolderSearch}>
+          <div className="mb-3 flex items-start gap-2 p-3 rounded-lg bg-orange-900/15 border border-orange-700/25">
+            <Info className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
+            <p className="text-orange-200/70 text-xs">
+              CS2 lädt Demos per <span className="font-mono text-orange-200/90">playdemo replays/DATEINAME</span> relativ zum csgo-Ordner. Demos müssen im Replay-Ordner liegen, damit CS2 sie findet.
+            </p>
+          </div>
+
+          <PathInput
+            label="Replay-Ordner (CS2 Demo-Speicherort)"
+            value={form.demoDirectory}
+            onChange={(v) => setForm((f) => ({ ...f, demoDirectory: v }))}
+            placeholder="C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\replays"
+            onBrowseDir={() => handlePickFolder("demoDirectory")}
+            hint="Entpackte .dem-Dateien werden hier gespeichert. Standardmäßig der CS2 replays-Ordner."
+          />
+
+          {isTauri() && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                onClick={handleOpenReplayFolder}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-white/50 hover:text-white/80 hover:bg-white/8 border border-white/10 transition-all"
+              >
+                <FolderOpen className="w-3.5 h-3.5" />
+                CS2 Replay-Ordner öffnen
+              </button>
+              {form.steamPath && (
+                <button
+                  onClick={handleDetectReplayFolder}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-white/50 hover:text-white/80 hover:bg-white/8 border border-white/10 transition-all"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Replay-Ordner neu erkennen
+                </button>
+              )}
+              <button
+                onClick={handleRefreshLibrary}
+                disabled={refreshing}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-white/50 hover:text-white/80 hover:bg-white/8 border border-white/10 transition-all disabled:opacity-50"
+              >
+                {refreshing
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : <RefreshCw className="w-3.5 h-3.5" />
+                }
+                Bibliothek neu einlesen
+              </button>
+            </div>
+          )}
+        </Section>
+
         {/* Options */}
         <Section title="Optionen">
           <div className="space-y-4">
             <Toggle
               label="Automatisch entpacken"
-              description=".dem.gz Dateien werden beim Import automatisch zu .dem entpackt"
+              description=".dem.gz und .dem.zst Dateien werden beim Import automatisch zu .dem entpackt"
               value={form.autoExtractGz}
               onChange={(v) => setForm((f) => ({ ...f, autoExtractGz: v }))}
             />
@@ -237,7 +299,7 @@ export function SettingsPage() {
           </div>
         </Section>
 
-        {/* Tauri info banner */}
+        {/* Environment banner */}
         {!isTauri() && (
           <div className="flex items-start gap-3 p-4 rounded-xl border border-yellow-700/30 bg-yellow-900/15">
             <Info className="w-5 h-5 text-yellow-400 shrink-0 mt-0.5" />
@@ -245,8 +307,7 @@ export function SettingsPage() {
               <p className="text-yellow-300 text-sm font-medium">Browser-Vorschau aktiv</p>
               <p className="text-yellow-200/55 text-xs mt-1">
                 Dateisystem-Zugriff, Ordner öffnen und CS2 starten sind nur in der
-                Desktop-App (Tauri) verfügbar. Im Browser werden Demos nur als Vorschau
-                verwaltet.
+                Desktop-App (Tauri) verfügbar.
               </p>
             </div>
           </div>
