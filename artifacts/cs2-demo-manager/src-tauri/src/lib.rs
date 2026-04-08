@@ -327,65 +327,88 @@ pub mod commands {
         playdemo_arg: String,
     ) -> Result<LaunchResult, String> {
         let console_cmd = format!("playdemo {}", playdemo_arg);
-
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
-            // CREATE_NO_WINDOW — suppresses the black cmd console flash
             const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-            // ── Build the raw cmd argument string ─────────────────────────
-            // Correct Steam URI format for CS2 demo launch:
-            //   steam://rungameid/730//+playdemo "replays/<name>"
+            // ── Derive steam.exe from cs2.exe (walk 7 dirs up to Steam root) ──
+            // cs2.exe: <steam_root>/steamapps/common/Counter-Strike Global Offensive/game/bin/win64/cs2.exe
+            // steam.exe: <steam_root>/steam.exe
+            let steam_exe_path: Option<PathBuf> = (|| {
+                let mut p = PathBuf::from(&cs2_exe_path);
+                for _ in 0..7 {
+                    p = p.parent()?.to_path_buf();
+                }
+                let s = p.join("steam.exe");
+                if s.exists() { Some(s) } else { None }
+            })();
+
+            eprintln!("[CS2DM] cs2_exe_path : {}", cs2_exe_path);
+            eprintln!("[CS2DM] playdemo_arg : {}", playdemo_arg);
+            eprintln!("[CS2DM] steam.exe    : {:?}", steam_exe_path);
+
+            // ── PRIMARY: steam.exe -applaunch 730 +playdemo replays/<name> ──
             //
-            // Key differences from previous (broken) attempts:
-            //   - "rungameid" (not "rungame")
-            //   - "730//" — double slash, empty user-id field (not "730/0/")
-            //   - demo name is QUOTED with " inside the URI
-            //   - the steam:// URI itself is NOT wrapped in outer quotes —
-            //     "start" handles protocol URIs without needing outer quotes
-            //
-            // Full cmd command as typed manually:
-            //   start steam://rungameid/730//+playdemo "replays/<name>"
-            //
-            // We use raw_arg so Rust does not add any extra quoting:
-            let raw_cmd_arg = format!(
-                "/C start steam://rungameid/730//+playdemo \"{}\"",
-                playdemo_arg   // already "replays/<demo_name_without_ext>"
-            );
-            let cmd_debug = format!(
-                "cmd /C start steam://rungameid/730//+playdemo \"{}\"",
-                playdemo_arg
-            );
-
-            eprintln!("[CS2DM] CMD string: {}", cmd_debug);
-
-            // ── PRIMARY: cmd /C start "" "<steam_uri>" ────────────────────
-            let steam_ok = Command::new("cmd")
-                .raw_arg(&raw_cmd_arg)
-                .creation_flags(CREATE_NO_WINDOW)
-                .spawn()
-                .is_ok();
-
-            eprintln!("[CS2DM] Steam launch ok: {}", steam_ok);
-
-            if steam_ok {
-                return Ok(LaunchResult {
-                    status: "launched".to_string(),
-                    command: Some(cmd_debug),
-                });
-            }
-
-            // ── FALLBACK: direct cs2.exe spawn ────────────────────────────
-            eprintln!("[CS2DM] Steam failed, trying direct cs2.exe: {}", cs2_exe_path);
-            let exe = PathBuf::from(&cs2_exe_path);
-            if exe.exists() {
-                let direct_ok = Command::new(&exe)
-                    .raw_arg(&format!("+playdemo \"{}\"", playdemo_arg))
+            // Most reliable method per Valve docs and community guides.
+            // Arguments are passed directly to Steam — no URI encoding,
+            // no cmd.exe shell parsing, no space-splitting issues.
+            // Steam receives -applaunch 730 and launches CS2 with +playdemo.
+            if let Some(ref steam_exe) = steam_exe_path {
+                let ok = Command::new(steam_exe)
+                    .args(["-applaunch", "730", "+playdemo", &playdemo_arg])
                     .creation_flags(CREATE_NO_WINDOW)
                     .spawn()
                     .is_ok();
-                eprintln!("[CS2DM] Direct cs2.exe ok: {}", direct_ok);
+                eprintln!("[CS2DM] PRIMARY steam.exe -applaunch ok: {}", ok);
+                if ok {
+                    let dbg = format!(
+                        ""{}" -applaunch 730 +playdemo "{}"",
+                        steam_exe.display(), playdemo_arg
+                    );
+                    return Ok(LaunchResult {
+                        status: "launched".to_string(),
+                        command: Some(dbg),
+                    });
+                }
+            }
+
+            // ── FALLBACK 1: steam:// URI with %20-encoded space ────────────
+            //
+            // Space MUST be %20 — a literal space causes cmd.exe start to
+            // split the URI, so Steam only receives the +playdemo without
+            // the demo name. %20 keeps the full URI as one token.
+            //
+            // Format: steam://rungameid/730//+playdemo%20replays/<name>
+            let uri = format!(
+                "steam://rungameid/730//+playdemo%20{}",
+                playdemo_arg
+            );
+            let raw_cmd = format!("/C start "" "{}"", uri);
+            eprintln!("[CS2DM] FALLBACK1 URI : {}", uri);
+            let uri_ok = Command::new("cmd")
+                .raw_arg(&raw_cmd)
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .is_ok();
+            eprintln!("[CS2DM] FALLBACK1 ok  : {}", uri_ok);
+            if uri_ok {
+                return Ok(LaunchResult {
+                    status: "launched".to_string(),
+                    command: Some(format!("cmd /C start "" "{}"", uri)),
+                });
+            }
+
+            // ── FALLBACK 2: spawn cs2.exe directly ────────────────────────
+            eprintln!("[CS2DM] FALLBACK2 direct cs2.exe: {}", cs2_exe_path);
+            let exe = PathBuf::from(&cs2_exe_path);
+            if exe.exists() {
+                let direct_ok = Command::new(&exe)
+                    .args(["+playdemo", &playdemo_arg])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn()
+                    .is_ok();
+                eprintln!("[CS2DM] FALLBACK2 ok  : {}", direct_ok);
                 if direct_ok {
                     return Ok(LaunchResult {
                         status: "launched".to_string(),
@@ -397,9 +420,14 @@ pub mod commands {
 
         #[cfg(not(target_os = "windows"))]
         {
-            let steam_uri = format!("steam://rungameid/730//+playdemo \"{}\"", playdemo_arg);
-            eprintln!("[CS2DM] Steam URI (non-windows): {}", steam_uri);
-            let _ = Command::new("xdg-open").arg(&steam_uri).spawn();
+            let uri = format!("steam://rungameid/730//+playdemo%20{}", playdemo_arg);
+            let linux_ok = Command::new("steam")
+                .args(["-applaunch", "730", "+playdemo", &playdemo_arg])
+                .spawn()
+                .is_ok();
+            if !linux_ok {
+                let _ = Command::new("xdg-open").arg(&uri).spawn();
+            }
         }
 
         // ── LAST: clipboard fallback ──────────────────────────────────────
