@@ -500,6 +500,38 @@ pub mod commands {
             .ok_or_else(|| format!("Datei nicht gefunden: {}", filepath))
     }
 
+    /// Check whether CS2 is currently running as a process.
+    ///
+    /// Windows: queries tasklist for "cs2.exe"
+    /// Linux:   uses pgrep -x cs2
+    #[tauri::command]
+    pub fn is_cs2_running() -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            let output = Command::new("tasklist")
+                .args(["/FI", "IMAGENAME eq cs2.exe", "/NH", "/FO", "CSV"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .unwrap_or_default();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let running = stdout.to_lowercase().contains("cs2.exe");
+            eprintln!("[CS2DM] is_cs2_running: {}", running);
+            return running;
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let ok = Command::new("pgrep")
+                .args(["-x", "cs2"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            eprintln!("[CS2DM] is_cs2_running (linux): {}", ok);
+            ok
+        }
+    }
+
     // ── Command — FACEIT demo download ───────────────
 
     #[tauri::command]
@@ -632,6 +664,7 @@ pub fn run() {
             commands::check_cs2_path,
             commands::detect_steam_path,
             commands::get_file_info,
+            commands::is_cs2_running,
             commands::download_demo,
         ])
         .run(tauri::generate_context!())
