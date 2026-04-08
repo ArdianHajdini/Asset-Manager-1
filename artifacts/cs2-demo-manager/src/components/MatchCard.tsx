@@ -1,19 +1,28 @@
 import { useState } from "react";
 import {
   Download, Play, FolderOpen, Loader2, CheckCircle2, AlertCircle,
-  Calendar, Map, Trophy, X, Users,
+  Calendar, Map, Trophy, Copy, Check, Users, Volume2, Info,
 } from "lucide-react";
 import type { FaceitHistoryItem } from "../types/faceit";
 import { useFaceit } from "../context/FaceitContext";
 import { useApp } from "../context/AppContext";
 import {
-  getMatchResult, getOpponentTeam, getOwnTeam, prettyMapName, formatMatchDate, getScoreString,
+  getMatchResult, getOpponentTeam, getOwnTeam, prettyMapName,
+  formatMatchDate, getScoreString, getMatchDetails,
 } from "../services/faceitMatchService";
 import {
   resolveDemoUrl, downloadFaceitDemo, demoDisplayName, findDownloadedDemo,
 } from "../services/faceitDownloadService";
-import { getMatchDetails } from "../services/faceitMatchService";
-import { launchDemoInCS2 } from "../services/cs2Service";
+import {
+  buildPlaydemoArg,
+  copyToClipboard,
+  launchDemoInCS2,
+} from "../services/cs2Service";
+import {
+  type VoiceMode,
+  VOICE_OPTIONS,
+  buildFullPlayCommand,
+} from "../services/voiceService";
 import { isTauri } from "../services/tauriBridge";
 import { useLocation } from "wouter";
 import { cn } from "@/lib/utils";
@@ -26,8 +35,17 @@ export function MatchCard({ match }: MatchCardProps) {
   const { connection, downloadStates, setDownloadState } = useFaceit();
   const { settings, setStatus, refreshDemos } = useApp();
   const [, navigate] = useLocation();
+
+  // Demo/details state
   const [demoUrlChecked, setDemoUrlChecked] = useState(false);
   const [hasDemoUrl, setHasDemoUrl] = useState<boolean | null>(null);
+  const [mapName, setMapName] = useState<string | null>(null);
+
+  // Voice mode for copy-command
+  const [voiceMode, setVoiceMode] = useState<VoiceMode>("all");
+  const [showVoicePicker, setShowVoicePicker] = useState(false);
+  const [cmdCopied, setCmdCopied] = useState(false);
+  const [launching, setLaunching] = useState(false);
 
   if (!connection) return null;
 
@@ -35,7 +53,6 @@ export function MatchCard({ match }: MatchCardProps) {
   const result = getMatchResult(match, playerId);
   const opponent = getOpponentTeam(match, playerId);
   const ownTeam = getOwnTeam(match, playerId);
-  const mapRaw = match.competition_name?.toLowerCase().includes("de_") ? null : null;
   const score = getScoreString(match, playerId);
   const dateStr = formatMatchDate(match.started_at);
 
@@ -43,11 +60,25 @@ export function MatchCard({ match }: MatchCardProps) {
   const existingDemo = findDownloadedDemo(match.match_id);
   const isAlreadyDownloaded = dlState.status === "done" || existingDemo !== null;
 
+  // Build playdemo command from downloaded demo file
+  const downloadedDemo = existingDemo;
+  const playdemoArg = downloadedDemo
+    ? buildPlaydemoArg(downloadedDemo.filename)
+    : dlState.demoPath
+      ? buildPlaydemoArg(dlState.demoPath.split(/[\\/]/).pop() ?? "")
+      : null;
+  const fullCommand = playdemoArg
+    ? buildFullPlayCommand(playdemoArg, voiceMode)
+    : null;
+
+  // ── Lazy-load demo details (map, availability) ───────────────────────────
   async function checkDemoAvailability() {
     if (demoUrlChecked || !connection) return;
     try {
       const details = await getMatchDetails(match.match_id, connection);
       setHasDemoUrl(!!(details.demo_url && details.demo_url.length > 0));
+      const rawMap = details.voting?.map?.pick?.[0] ?? null;
+      if (rawMap) setMapName(prettyMapName(rawMap));
     } catch {
       setHasDemoUrl(false);
     } finally {
@@ -55,16 +86,14 @@ export function MatchCard({ match }: MatchCardProps) {
     }
   }
 
+  // ── Download demo ────────────────────────────────────────────────────────
   async function handleDownload() {
     if (!connection) return;
 
-    // In Tauri mode: block if no replay folder is configured — demos must go
-    // into the CS2 replay folder or CS2 won't find them.
     if (isTauri() && !settings.demoDirectory) {
       setStatus({
         type: "error",
-        message:
-          "Kein CS2 Replay-Ordner konfiguriert. Bitte die Einstellungen öffnen und CS2 automatisch erkennen lassen.",
+        message: "Kein CS2 Replay-Ordner konfiguriert. Bitte CS2 in den Einstellungen automatisch erkennen lassen.",
       });
       return;
     }
@@ -72,6 +101,11 @@ export function MatchCard({ match }: MatchCardProps) {
     setDownloadState(match.match_id, { status: "downloading", progress: 0 });
     try {
       const details = await getMatchDetails(match.match_id, connection);
+
+      // Extract map name while we have the details
+      const rawMap = details.voting?.map?.pick?.[0] ?? null;
+      if (rawMap) setMapName(prettyMapName(rawMap));
+
       const url = await resolveDemoUrl(match.match_id, connection, details);
       if (!url) {
         setDownloadState(match.match_id, {
@@ -81,9 +115,7 @@ export function MatchCard({ match }: MatchCardProps) {
         return;
       }
 
-      const mapName = details.voting?.map?.pick?.[0] ?? null;
-      const displayName = demoDisplayName(match.match_id, prettyMapName(mapName));
-
+      const displayName = demoDisplayName(match.match_id, mapName ?? prettyMapName(rawMap));
       setDownloadState(match.match_id, { status: "downloading", progress: 10 });
 
       const demo = await downloadFaceitDemo(
@@ -100,16 +132,21 @@ export function MatchCard({ match }: MatchCardProps) {
       );
 
       if (demo) {
-        setDownloadState(match.match_id, { status: "done", demoPath: demo.filepath, demoId: demo.id });
+        setDownloadState(match.match_id, {
+          status: "done",
+          demoPath: demo.filepath,
+          demoId: demo.id,
+        });
         await refreshDemos();
-        setStatus({ type: "success", message: `Demo „${displayName}" in den CS2 Replay-Ordner heruntergeladen.` });
+        setStatus({
+          type: "success",
+          message: `Demo „${displayName}" wurde im Replay-Ordner gespeichert.`,
+        });
       } else {
-        // Browser fallback — file downloaded to browser's Downloads folder
         setDownloadState(match.match_id, { status: "done" });
         setStatus({
           type: "info",
-          message:
-            "Browser-Download gestartet. Im Browser-Modus wird die Demo in deinen Downloads-Ordner gespeichert und muss manuell in den CS2 Replay-Ordner verschoben werden. Vollständiger Workflow (automatisch in Replay-Ordner + direkt spielbar) ist nur in der nativen Desktop-App verfügbar.",
+          message: "Browser-Download gestartet. Demo muss manuell in den CS2 Replay-Ordner verschoben werden.",
         });
       }
     } catch (err) {
@@ -118,36 +155,58 @@ export function MatchCard({ match }: MatchCardProps) {
     }
   }
 
-  async function handleWatch() {
-    const demo = existingDemo;
-    if (!demo) return;
+  // ── Copy command ─────────────────────────────────────────────────────────
+  async function handleCopyCommand() {
+    if (!fullCommand) {
+      setStatus({ type: "error", message: "Demo wurde noch nicht verarbeitet — bitte zuerst herunterladen." });
+      return;
+    }
+    const copied = await copyToClipboard(fullCommand);
+    setCmdCopied(copied);
+    if (copied) {
+      setStatus({ type: "success", message: "Befehl wurde in die Zwischenablage kopiert." });
+      setTimeout(() => setCmdCopied(false), 3000);
+    }
+  }
 
-    // Browser mode: can't control file location or launch CS2 reliably
+  // ── Launch CS2 + copy (best effort) ──────────────────────────────────────
+  async function handleWatch() {
+    if (!downloadedDemo) return;
+
     if (!isTauri()) {
+      // Browser: just copy the command
+      await handleCopyCommand();
       setStatus({
         type: "info",
-        message:
-          "Demo in CS2 starten ist nur in der nativen Desktop-App möglich. Im Browser: Starte CS2, öffne die Konsole und gib den playdemo-Befehl manuell ein.",
+        message: "Befehl kopiert. In CS2 starten ist nur in der Desktop-App verfügbar.",
       });
       return;
     }
 
-    // Use filename (not filepath) — cs2Service derives "replays/FILENAME" from it
-    const result2 = await launchDemoInCS2(demo.filename, settings.cs2Path);
-    if (result2 === "launched") {
-      setStatus({ type: "success", message: `Demo wird über Steam in CS2 gestartet...` });
-    } else {
+    setLaunching(true);
+    try {
+      if (fullCommand) {
+        await copyToClipboard(fullCommand);
+        setCmdCopied(true);
+      }
+      const outcome = await launchDemoInCS2(downloadedDemo.filename, settings.cs2Path);
       setStatus({
         type: "info",
-        message: "CS2 konnte nicht automatisch gestartet werden. Befehl wurde in die Zwischenablage kopiert — in CS2-Konsole einfügen.",
+        message: outcome.status === "launched"
+          ? (outcome.note ?? "CS2 / Steam gestartet. Befehl in die Konsole einfügen.")
+          : "Befehl kopiert — öffne CS2, drücke ~ und füge ein.",
       });
+    } catch {
+      setStatus({
+        type: "info",
+        message: "CS2 konnte nicht gestartet werden. Befehl wurde kopiert — bitte manuell einfügen.",
+      });
+    } finally {
+      setLaunching(false);
     }
   }
 
-  function handleOpenInLibrary() {
-    navigate("/library");
-  }
-
+  // ── Styling based on result ───────────────────────────────────────────────
   const resultColor =
     result === "win" ? "text-green-400" :
     result === "loss" ? "text-red-400" :
@@ -172,62 +231,58 @@ export function MatchCard({ match }: MatchCardProps) {
       onMouseEnter={checkDemoAvailability}
     >
       <div className="p-4">
-        {/* Header: result badge + score + date */}
+
+        {/* Header: result · score · date */}
         <div className="flex items-center justify-between gap-3 mb-3">
           <div className="flex items-center gap-3">
-            {/* Result badge */}
             <span className={cn("text-xs font-bold uppercase tracking-widest", resultColor)}>
               {resultLabel}
             </span>
-            {/* Score */}
             {match.results && (
-              <span className="text-white/60 text-sm font-mono font-semibold">
+              <span className="text-white/70 text-sm font-mono font-bold">
                 {score}
               </span>
             )}
-            {/* Competition name */}
-            <span className="text-white/25 text-xs truncate max-w-40">
-              {match.competition_name}
-            </span>
           </div>
-          {/* Date */}
           <div className="flex items-center gap-1.5 text-white/30 text-xs">
             <Calendar className="w-3 h-3" />
             {dateStr}
           </div>
         </div>
 
-        {/* Teams row */}
-        <div className="flex items-center gap-2 mb-3">
-          <div className="flex items-center gap-2 min-w-0">
-            {ownTeam.players.slice(0, 5).map((p) => (
-              <span key={p.player_id ?? p.nickname} className="text-white/70 text-xs font-medium truncate">
-                {p.nickname}
-              </span>
-            ))}
+        {/* Map + match type */}
+        <div className="flex items-center gap-3 mb-3">
+          <div className="flex items-center gap-1.5">
+            <Map className="w-3 h-3 text-white/30" />
+            <span className="text-white/55 text-xs font-mono font-semibold">
+              {mapName ?? (demoUrlChecked ? "–" : match.competition_name)}
+            </span>
           </div>
-          <span className="text-white/20 text-xs shrink-0">vs</span>
+          <span className="text-white/20 text-xs">{match.match_id.slice(0, 8)}…</span>
+        </div>
+
+        {/* Teams row: ownTeam vs opponent */}
+        <div className="flex items-center gap-2 mb-4 text-xs">
+          {/* Own team */}
+          <div className="flex items-center gap-1 min-w-0">
+            <span className="text-orange-400/70 font-semibold shrink-0">{ownTeam.nickname || "Team 1"}</span>
+            <span className="text-white/20">
+              ({ownTeam.players.slice(0, 5).map((p) => p.nickname).join(", ")})
+            </span>
+          </div>
+          <span className="text-white/25 shrink-0 font-bold">vs</span>
+          {/* Opponent */}
           <div className="flex items-center gap-1 min-w-0">
             <Users className="w-3 h-3 text-white/25 shrink-0" />
-            <span className="text-white/40 text-xs font-medium truncate">
+            <span className="text-white/50 font-semibold truncate">
               {opponent.nickname || opponent.players.slice(0, 2).map((p) => p.nickname).join(", ")}
             </span>
           </div>
         </div>
 
-        {/* Map + demo status */}
-        <div className="flex items-center gap-3 mb-4">
-          {match.competition_name && (
-            <div className="flex items-center gap-1.5">
-              <Map className="w-3 h-3 text-white/25" />
-              <span className="text-white/35 text-xs font-mono">
-                {match.competition_name}
-              </span>
-            </div>
-          )}
-
-          {/* Demo availability indicator */}
-          {demoUrlChecked && (
+        {/* Demo status badges */}
+        <div className="flex items-center gap-2 mb-4 flex-wrap">
+          {demoUrlChecked && !isAlreadyDownloaded && (
             <span className={cn(
               "text-xs px-2 py-0.5 rounded-full border",
               hasDemoUrl
@@ -237,7 +292,6 @@ export function MatchCard({ match }: MatchCardProps) {
               {hasDemoUrl ? "Demo verfügbar" : "Keine Demo"}
             </span>
           )}
-
           {isAlreadyDownloaded && (
             <span className="flex items-center gap-1 text-xs text-orange-400">
               <CheckCircle2 className="w-3 h-3" />
@@ -254,34 +308,99 @@ export function MatchCard({ match }: MatchCardProps) {
           </div>
         )}
 
+        {/* Voice mode picker (only when demo is downloaded) */}
+        {isAlreadyDownloaded && showVoicePicker && (
+          <div className="mb-3 p-3 rounded-lg bg-black/30 border border-white/6">
+            <p className="text-white/40 text-xs mb-2 flex items-center gap-1.5">
+              <Volume2 className="w-3 h-3" />
+              Voice-Modus
+            </p>
+            <div className="grid grid-cols-4 gap-1">
+              {VOICE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.mode}
+                  onClick={() => setVoiceMode(opt.mode)}
+                  title={opt.notImplementedNote ?? opt.description}
+                  className={cn(
+                    "relative px-2 py-1.5 rounded-lg border text-xs font-medium transition-all",
+                    voiceMode === opt.mode
+                      ? "border-orange-500/60 bg-orange-500/15 text-orange-300"
+                      : "border-white/8 bg-white/3 text-white/40 hover:text-white/60"
+                  )}
+                >
+                  {opt.label}
+                  {!opt.implemented && (
+                    <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-yellow-500/80" />
+                  )}
+                </button>
+              ))}
+            </div>
+            {VOICE_OPTIONS.find((o) => o.mode === voiceMode)?.notImplementedNote && (
+              <p className="mt-1.5 text-[10px] text-yellow-400/60 flex items-center gap-1">
+                <Info className="w-3 h-3 shrink-0" />
+                {VOICE_OPTIONS.find((o) => o.mode === voiceMode)?.notImplementedNote}
+              </p>
+            )}
+            {fullCommand && (
+              <div className="mt-2 flex items-center gap-2 bg-black/40 rounded px-2.5 py-1.5">
+                <code className="flex-1 font-mono text-[11px] text-orange-300/80 truncate">{fullCommand}</code>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Action buttons */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {isAlreadyDownloaded ? (
             <>
-              {isTauri() ? (
+              {/* Copy command — primary */}
+              <button
+                onClick={handleCopyCommand}
+                className={cn(
+                  "flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all",
+                  cmdCopied
+                    ? "bg-green-600 text-white"
+                    : "bg-white/8 hover:bg-white/15 border border-white/12 text-white/80 hover:text-white"
+                )}
+              >
+                {cmdCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                {cmdCopied ? "Kopiert!" : "Befehl kopieren"}
+              </button>
+
+              {/* Voice toggle */}
+              <button
+                onClick={() => setShowVoicePicker((v) => !v)}
+                className={cn(
+                  "p-2 rounded-lg border text-xs transition-all",
+                  showVoicePicker
+                    ? "border-orange-500/50 bg-orange-500/10 text-orange-300"
+                    : "border-white/10 text-white/30 hover:text-white/60 hover:border-white/20"
+                )}
+                title="Voice-Modus wählen"
+              >
+                <Volume2 className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Launch in CS2 (Tauri only) */}
+              {isTauri() && (
                 <button
                   onClick={handleWatch}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-400 active:bg-orange-600 text-white text-sm font-medium transition-colors"
+                  disabled={launching}
+                  className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-orange-500 hover:bg-orange-400 active:bg-orange-600 text-white text-sm font-medium transition-colors disabled:opacity-40"
                 >
-                  <Play className="w-3.5 h-3.5" />
-                  In CS2 ansehen
+                  {launching
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Play className="w-3.5 h-3.5" />}
+                  In CS2 öffnen
                 </button>
-              ) : (
-                <div
-                  title="Nur in der nativen Desktop-App verfügbar"
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg border border-white/10 bg-white/3 text-white/25 text-sm font-medium cursor-not-allowed select-none"
-                >
-                  <Play className="w-3.5 h-3.5" />
-                  In CS2 ansehen
-                  <span className="text-xs text-white/20">(nur Desktop)</span>
-                </div>
               )}
+
               <button
-                onClick={handleOpenInLibrary}
-                className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium text-white/50 hover:text-white/80 hover:bg-white/8 transition-all"
+                onClick={() => navigate("/library")}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-white/30 hover:text-white/60 hover:bg-white/5 transition-all"
               >
                 <FolderOpen className="w-3.5 h-3.5" />
-                In Bibliothek
+                Bibliothek
               </button>
             </>
           ) : dlState.status === "downloading" || dlState.status === "extracting" ? (
@@ -302,24 +421,34 @@ export function MatchCard({ match }: MatchCardProps) {
               </div>
             </div>
           ) : (
-            <button
-              onClick={handleDownload}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-orange-500/50 bg-orange-500/10 hover:bg-orange-500/20 text-orange-300 text-sm font-medium transition-all"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Demo herunterladen
-            </button>
+            <>
+              {/* Demo not downloaded yet — show download button */}
+              {hasDemoUrl === false ? (
+                <span className="text-white/25 text-xs px-3 py-2">Keine Demo verfügbar</span>
+              ) : (
+                <button
+                  onClick={handleDownload}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg border border-orange-500/50 bg-orange-500/10 hover:bg-orange-500/20 text-orange-300 text-sm font-medium transition-all"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Demo herunterladen
+                </button>
+              )}
+            </>
           )}
 
-          <a
-            href={match.faceit_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm text-white/30 hover:text-white/60 hover:bg-white/5 transition-all"
-          >
-            <Trophy className="w-3.5 h-3.5" />
-            FACEIT
-          </a>
+          {/* FACEIT link */}
+          {match.faceit_url && (
+            <a
+              href={match.faceit_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-white/25 hover:text-white/55 hover:bg-white/5 transition-all"
+            >
+              <Trophy className="w-3.5 h-3.5" />
+              FACEIT
+            </a>
+          )}
         </div>
       </div>
     </div>
