@@ -122,6 +122,18 @@ export async function tauriDetectSteamPath(): Promise<string | null> {
   return invoke<string | null>("detect_steam_path");
 }
 
+/** Scan a folder for demo files (.dem, .dem.gz, .dem.zst). */
+export async function tauriScanDownloads(directory: string): Promise<TauriDemoEntry[]> {
+  const invoke = await getInvoke();
+  return invoke<TauriDemoEntry[]>("scan_downloads", { directory });
+}
+
+/** Detect the Windows Downloads folder for the current user. */
+export async function tauriDetectDownloadsFolder(): Promise<string | null> {
+  const invoke = await getInvoke();
+  return invoke<string | null>("detect_downloads_folder");
+}
+
 /** Get file metadata for a specific demo path. */
 export async function tauriGetFileInfo(filepath: string): Promise<TauriDemoEntry> {
   const invoke = await getInvoke();
