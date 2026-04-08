@@ -122,6 +122,7 @@ export async function connectWithApiKey(
     avatar: player.avatar,
     skillLevel: player.games?.cs2?.skill_level,
     elo: player.games?.cs2?.faceit_elo,
+    steamId: player.games?.cs2?.game_player_id,
     authMethod: "api_key",
     apiKey,
     connectedAt: new Date().toISOString(),
@@ -225,6 +226,7 @@ export async function completeOAuthFlow(code: string, state: string): Promise<Fa
   let avatar = "";
   let skillLevel: number | undefined;
   let elo: number | undefined;
+  let steamId: string | undefined;
 
   if (playerRes.ok) {
     const p = await playerRes.json();
@@ -233,6 +235,7 @@ export async function completeOAuthFlow(code: string, state: string): Promise<Fa
     avatar = p.avatar ?? "";
     skillLevel = p.games?.cs2?.skill_level;
     elo = p.games?.cs2?.faceit_elo;
+    steamId = p.games?.cs2?.game_player_id;
   }
 
   const conn: FaceitConnection = {
@@ -241,6 +244,7 @@ export async function completeOAuthFlow(code: string, state: string): Promise<Fa
     avatar,
     skillLevel,
     elo,
+    steamId,
     authMethod: "oauth",
     accessToken: tokens.access_token,
     refreshToken: tokens.refresh_token,
