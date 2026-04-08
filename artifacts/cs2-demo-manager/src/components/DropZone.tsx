@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Upload, FileArchive, Loader2 } from "lucide-react";
 import { useApp } from "../context/AppContext";
 import { buildDemoFromFile, importDemoFromPath } from "../services/demoService";
@@ -14,6 +14,10 @@ export function DropZone({ onSuccess }: DropZoneProps) {
   const [dragging, setDragging] = useState(false);
   const [importing, setImporting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Guard against Tauri click-through: when a native dialog closes, the OS
+  // fires a synthetic click on the WebView at the last cursor position.
+  // This ref blocks re-opening the picker until the click-through window passes.
+  const isPickerOpenRef = useRef(false);
 
   // ── Tauri drag-drop event listener ──────────────────────────────────────
   // In Tauri, the HTML drag-drop API does not give us real file paths.
@@ -112,11 +116,20 @@ export function DropZone({ onSuccess }: DropZoneProps) {
   }
 
   // ── Tauri native file picker ─────────────────────────────────────────────
-  async function handleTauriFilePicker() {
+  const handleTauriFilePicker = useCallback(async (e: React.MouseEvent) => {
+    // Always stop propagation so this click never reaches parent elements.
+    e.stopPropagation();
+
+    // Guard: block re-entry while picker is open OR during the click-through
+    // window that follows a native dialog closing on Windows.
+    if (importing || isPickerOpenRef.current) return;
+
     if (!isTauri()) {
       inputRef.current?.click();
       return;
     }
+
+    isPickerOpenRef.current = true;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const result = await open({
@@ -134,15 +147,20 @@ export function DropZone({ onSuccess }: DropZoneProps) {
     } catch {
       // dialog plugin not available — fall back to HTML input
       inputRef.current?.click();
+    } finally {
+      // Delay before re-enabling: this absorbs the synthetic click the OS
+      // fires on the WebView when a native dialog loses focus / closes.
+      setTimeout(() => { isPickerOpenRef.current = false; }, 400);
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importing, settings]);
 
   return (
     <div
       onDragOver={(e) => { e.preventDefault(); if (!isTauri()) setDragging(true); }}
       onDragLeave={() => { if (!isTauri()) setDragging(false); }}
       onDrop={handleBrowserDrop}
-      onClick={importing ? undefined : handleTauriFilePicker}
+      onClick={handleTauriFilePicker}
       className={cn(
         "relative cursor-pointer rounded-2xl border-2 border-dashed transition-all duration-200",
         "flex flex-col items-center justify-center gap-3 py-12 px-8 text-center select-none",

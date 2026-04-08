@@ -44,7 +44,7 @@ export function HomePage() {
       <div className="mb-8 text-center">
         <h1 className="text-3xl font-bold text-white tracking-tight">Demo importieren</h1>
         <p className="text-white/45 text-sm mt-2">
-          Ziehe eine .dem oder .dem.gz Datei hier rein oder wähle sie per Knopfdruck aus.
+          Ziehe eine .dem, .dem.gz oder .dem.zst Datei hier rein oder wähle sie per Knopfdruck aus.
         </p>
       </div>
 
