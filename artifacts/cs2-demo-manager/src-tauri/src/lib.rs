@@ -363,7 +363,7 @@ pub mod commands {
                 eprintln!("[CS2DM] PRIMARY steam.exe -applaunch ok: {}", ok);
                 if ok {
                     let dbg = format!(
-                        ""{}" -applaunch 730 +playdemo "{}"",
+                        "\"{}\" -applaunch 730 +playdemo \"{}\"",
                         steam_exe.display(), playdemo_arg
                     );
                     return Ok(LaunchResult {
@@ -384,7 +384,7 @@ pub mod commands {
                 "steam://rungameid/730//+playdemo%20{}",
                 playdemo_arg
             );
-            let raw_cmd = format!("/C start "" "{}"", uri);
+            let raw_cmd = format!("/C start \"\" \"{}\"", uri);
             eprintln!("[CS2DM] FALLBACK1 URI : {}", uri);
             let uri_ok = Command::new("cmd")
                 .raw_arg(&raw_cmd)
@@ -395,7 +395,7 @@ pub mod commands {
             if uri_ok {
                 return Ok(LaunchResult {
                     status: "launched".to_string(),
-                    command: Some(format!("cmd /C start "" "{}"", uri)),
+                    command: Some(format!("cmd /C start \"\" \"{}\"", uri)),
                 });
             }
 
