@@ -150,6 +150,31 @@ export async function tauriIsCS2Running(): Promise<boolean> {
   return invoke<boolean>("is_cs2_running");
 }
 
+// ─────────────────────────────────────────
+//  Demo Player Parser
+// ─────────────────────────────────────────
+
+/** A player entry returned by the Rust PBDEMS2 parser. */
+export interface TauriDemoPlayer {
+  /** Steam ID64 as a string (avoids JS number precision loss for large u64 values). */
+  xuid: string;
+  name: string;
+  /** 2 = Terrorist, 3 = Counter-Terrorist, 0 = unassigned/spectator */
+  teamNum: number;
+  isHltv: boolean;
+}
+
+/**
+ * Parse a CS2 .dem file and return the list of players found in it.
+ * Reads the CDemoFileInfo protobuf from the PBDEMS2 header — no external crates needed.
+ * Returns an empty array if no players are found (e.g. corrupted demo).
+ * Throws a string error if the file is not a valid CS2 demo.
+ */
+export async function tauriParseDemoPlayers(filepath: string): Promise<TauriDemoPlayer[]> {
+  const invoke = await getInvoke();
+  return invoke<TauriDemoPlayer[]>("parse_demo_players", { filepath });
+}
+
 /**
  * Convert a TauriDemoEntry to the app's Demo type (adds a placeholder id).
  * The actual id is assigned by the frontend storage layer.
