@@ -5,7 +5,8 @@ import {
 import type { Demo } from "../types/demo";
 import { useApp } from "../context/AppContext";
 import { formatFileSize, formatDate, openDemoFolder } from "../services/demoService";
-import { launchDemoInCS2, buildPlaydemoCommand, buildPlaydemoArg, copyToClipboard, getCS2Status } from "../services/cs2Service";
+import { launchDemoInCS2, buildPlaydemoCommand, buildPlaydemoArg, copyToClipboard, getCS2Status, verifyCS2PathExists } from "../services/cs2Service";
+import type { LaunchOutcome } from "../services/cs2Service";
 import { isTauri, tauriIsCS2Running } from "../services/tauriBridge";
 import { cn } from "@/lib/utils";
 
@@ -23,6 +24,8 @@ export function DemoCard({ demo }: DemoCardProps) {
   const [cmdCopied, setCmdCopied] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [lastOutcome, setLastOutcome] = useState<LaunchOutcome | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
 
   const cs2Status = getCS2Status(settings.cs2Path);
   const playdemoArg = buildPlaydemoArg(demo.filename);
@@ -42,14 +45,26 @@ export function DemoCard({ demo }: DemoCardProps) {
     setShowCS2Warning(false);
 
     try {
-      // ── Step 1: Check if CS2 is running (Tauri only) ──────────────────
+      // ── Step 1: Verify cs2.exe actually exists on disk ─────────────────
+      if (isTauri()) {
+        const exists = await verifyCS2PathExists(settings.cs2Path);
+        if (!exists) {
+          setStatus({
+            type: "error",
+            message: "CS2-Pfad ungültig (cs2.exe nicht gefunden). Bitte Einstellungen prüfen.",
+          });
+          return;
+        }
+      }
+
+      // ── Step 2: Check if CS2 is running (Tauri only) ───────────────────
       if (isTauri()) {
         let running = false;
         try {
           running = await tauriIsCS2Running();
         } catch (err) {
           console.warn("[CS2DM] CS2-Prozesscheck fehlgeschlagen:", err);
-          running = true; // assume running if check fails, don't block user
+          running = true;
         }
 
         if (!running) {
@@ -60,7 +75,7 @@ export function DemoCard({ demo }: DemoCardProps) {
         }
       }
 
-      // ── Step 2: Copy the console command to clipboard (always) ────────
+      // ── Step 3: Copy console command to clipboard (always) ────────────
       const copied = await copyToClipboard(consoleCmd);
       setCmdCopied(copied);
 
@@ -71,24 +86,27 @@ export function DemoCard({ demo }: DemoCardProps) {
         cs2Path: settings.cs2Path,
       });
 
-      // ── Step 3: Try to open CS2 / Steam (best effort) ─────────────────
-      let opened = false;
+      // ── Step 4: Try to open CS2 / Steam (best effort) ─────────────────
+      let outcome: LaunchOutcome;
       try {
-        const result = await launchDemoInCS2(demo.filename, settings.cs2Path);
-        console.log("[CS2DM] Rust launch result:", result);
-        opened = result === "launched";
+        outcome = await launchDemoInCS2(demo.filename, settings.cs2Path);
+        console.log("[CS2DM] Launch outcome:", outcome);
       } catch (err) {
         console.warn("[CS2DM] Launch attempt failed:", err);
+        outcome = { status: "clipboard_fallback", method: "none", consoleCmd, steamUri: "" };
       }
-      setCs2Opened(opened);
+      setLastOutcome(outcome);
+      setCs2Opened(outcome.status === "launched");
 
-      // ── Step 4: Always show the step-by-step guide ────────────────────
+      // ── Step 5: Always show the step-by-step guide ────────────────────
       setShowGuide(true);
       setStatus({
         type: "info",
-        message: opened
-          ? "Befehl kopiert — öffne ~ in CS2 und füge ihn ein."
-          : "Befehl kopiert. Öffne ~ in CS2 und füge ihn ein.",
+        message: outcome.note ?? (
+          outcome.status === "launched"
+            ? "Befehl kopiert — öffne ~ in CS2 und füge ihn ein."
+            : "Befehl kopiert. Öffne ~ in CS2 und füge ihn ein."
+        ),
       });
     } finally {
       setLaunching(false);
@@ -336,6 +354,30 @@ export function DemoCard({ demo }: DemoCardProps) {
                   </div>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Debug panel — toggle after any launch attempt */}
+          {lastOutcome && (
+            <div className="mt-2">
+              <button
+                onClick={() => setShowDebug(v => !v)}
+                className="text-[10px] text-white/25 hover:text-white/50 transition-colors"
+              >
+                {showDebug ? "▲ Debug" : "▼ Debug"}
+              </button>
+              {showDebug && (
+                <pre className="mt-1 text-[9px] text-white/50 bg-black/50 p-2 rounded-lg overflow-x-auto leading-relaxed">
+                  {JSON.stringify({
+                    isTauri: isTauri(),
+                    cs2Path: settings.cs2Path,
+                    demo: demo.filename,
+                    playdemoArg,
+                    consoleCmd,
+                    outcome: lastOutcome,
+                  }, null, 2)}
+                </pre>
+              )}
             </div>
           )}
         </div>
