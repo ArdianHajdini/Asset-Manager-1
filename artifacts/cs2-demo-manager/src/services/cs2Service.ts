@@ -14,9 +14,9 @@
  *               (HKLM\SOFTWARE\WOW6432Node\Valve\Steam → InstallPath) and runs:
  *               steam.exe -applaunch 730 +playdemo replays/<name>
  *               Registry lookup works even when CS2 is on a secondary drive (D:\SteamLibrary).
- *   FALLBACK1 → Rust opens CS2 via Steam URI *without* +playdemo:
- *               cmd /C start "" "steam://rungameid/730"
- *               Steam protocol cannot reliably pass +commands; clipboard is the fallback.
+ *   FALLBACK1 → Rust opens CS2 via Steam URI with +playdemo:
+ *               cmd /C start "" "steam://rungame/730/+playdemo%20replays/<name>"
+ *               Format mirrors the official Steam item-preview scheme (rungame, %20-encoded).
  *   FALLBACK2 → Rust spawns cs2.exe directly with current_dir set to .../game/csgo
  *               so relative replays/<name> paths resolve correctly.
  *   LAST      → returns "clipboard_fallback" — frontend copies the console cmd.
@@ -150,16 +150,15 @@ export function buildPlaydemoCommand(playdemoArg: string): string {
 }
 
 /**
- * Build the correct Steam URI for launching CS2 with a demo.
+ * Build the Steam URI for launching CS2 with a demo.
  *
- * Correct format: steam://rungameid/730//+playdemo%20replays/<name>
- *   - rungameid  (NOT rungame — rungame is the legacy/wrong variant)
- *   - 730//      (double slash = empty user-id field, NOT 730/0/)
- *   - %20 instead of a literal space — a literal space causes cmd.exe
- *     and ShellExecute to split the URI, losing the demo name argument
+ * Format: steam://rungame/730/+playdemo%20replays/<name>
+ *   - rungame (mirrors the official Steam item-preview URI scheme)
+ *   - %20 instead of a literal space — a literal space causes cmd.exe / ShellExecute
+ *     to split the URI, losing the demo name argument
  */
 export function buildSteamLaunchUri(playdemoArg: string): string {
-  return `steam://rungameid/730//+playdemo%20${playdemoArg}`;
+  return `steam://rungame/730/+playdemo%20${playdemoArg}`;
 }
 
 export type LaunchOutcome = {
