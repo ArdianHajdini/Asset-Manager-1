@@ -24,15 +24,32 @@ export function SettingsPage() {
     try {
       const result = await detectCS2Path();
       if (result) {
+        console.log("[CS2DM] Auto-detect result:", result);
+
+        // ① Update local form state (what the user sees on screen)
         setForm((f) => ({
           ...f,
           steamPath: result.steamPath,
           cs2Path: result.cs2Path,
           demoDirectory: result.replayFolder,
         }));
+
+        // ② Persist IMMEDIATELY to context + localStorage via updateSettings.
+        //    This is critical: DropZone, MatchCard, and FACEIT downloads all
+        //    read settings.demoDirectory from context — not from local form state.
+        //    Without this call they would still see the old (empty) value.
+        updateSettings({
+          steamPath: result.steamPath,
+          cs2Path: result.cs2Path,
+          demoDirectory: result.replayFolder,
+        });
+
+        // ③ Reload the library from the newly detected replay folder
+        await refreshDemos();
+
         setStatus({
           type: "success",
-          message: `CS2 gefunden. Replay-Ordner: ${result.replayFolder}`,
+          message: `CS2 gefunden und gespeichert. Replay-Ordner: ${result.replayFolder}`,
         });
       } else {
         setStatus({
@@ -69,8 +86,12 @@ export function SettingsPage() {
     try {
       const folder = await detectReplayFolder(steam);
       if (folder) {
+        console.log("[CS2DM] Detected replay folder:", folder);
         setForm((f) => ({ ...f, demoDirectory: folder }));
-        setStatus({ type: "success", message: `Replay-Ordner gefunden: ${folder}` });
+        // Persist immediately so imports/downloads use the correct folder
+        updateSettings({ demoDirectory: folder });
+        await refreshDemos();
+        setStatus({ type: "success", message: `Replay-Ordner gefunden und gespeichert: ${folder}` });
       }
     } catch {
       setStatus({ type: "error", message: "Replay-Ordner konnte nicht ermittelt werden." });

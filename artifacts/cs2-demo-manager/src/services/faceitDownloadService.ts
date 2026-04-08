@@ -122,6 +122,13 @@ export async function downloadFaceitDemo(
   onProgress?.("downloading", 0);
   const { invoke } = await import("@tauri-apps/api/core");
 
+  console.log("[CS2DM] FACEIT download:", {
+    matchId,
+    destDir,
+    rawFilename,
+    url: demoUrl.slice(0, 80) + "…",
+  });
+
   const entry = await invoke<{
     filename: string;
     displayName: string;
@@ -133,6 +140,14 @@ export async function downloadFaceitDemo(
     url: demoUrl,
     destDir,
     filename: rawFilename,
+  });
+
+  console.log("[CS2DM] FACEIT download result:", {
+    filepath: entry.filepath,
+    directory: entry.directory,
+    filename: entry.filename,
+    size: entry.size,
+    inCorrectFolder: entry.directory === destDir,
   });
 
   onProgress?.("saving", 100);

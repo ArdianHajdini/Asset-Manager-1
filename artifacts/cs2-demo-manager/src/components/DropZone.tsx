@@ -77,11 +77,34 @@ export function DropZone({ onSuccess }: DropZoneProps) {
     }
     setImporting(true);
     try {
-      await importDemoFromPath(path, settings.demoDirectory, settings.autoExtractGz);
+      console.log("[CS2DM] Import:", {
+        sourcePath: path,
+        destDir: settings.demoDirectory,
+        extractGz: settings.autoExtractGz,
+      });
+      const demo = await importDemoFromPath(path, settings.demoDirectory, settings.autoExtractGz);
+      console.log("[CS2DM] Import result:", {
+        filepath: demo.filepath,
+        directory: demo.directory,
+        filename: demo.filename,
+      });
+      // Verify the demo landed in the correct replay folder
+      const inReplayFolder = demo.directory === settings.demoDirectory;
+      if (!inReplayFolder) {
+        console.warn("[CS2DM] Import directory mismatch!", {
+          expected: settings.demoDirectory,
+          actual: demo.directory,
+        });
+      }
       await refreshDemos();
-      setStatus({ type: "success", message: `Demo importiert: „${name.replace(/\.(gz|zst)$/, "").replace(/\.dem$/, "")}"` });
+      const displayBase = name.replace(/\.(gz|zst)$/, "").replace(/\.dem$/, "");
+      setStatus({
+        type: "success",
+        message: `Demo importiert: „${displayBase}" → ${demo.filepath}`,
+      });
       onSuccess?.();
     } catch (err) {
+      console.error("[CS2DM] Import error:", err);
       setStatus({ type: "error", message: String(err) });
     } finally {
       setImporting(false);
