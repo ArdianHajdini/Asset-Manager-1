@@ -24,6 +24,24 @@ pub struct LaunchResult {
     pub note: Option<String>,
 }
 
+/// A player entry extracted from a CS2 demo file.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DemoPlayer {
+    /// Steam ID 64 as a string (avoids JSON number precision loss)
+    pub xuid: String,
+    pub name: String,
+    /// 2 = Terrorist, 3 = Counter-Terrorist, 0 = unassigned/spectator
+    #[serde(rename = "teamNum")]
+    pub team_num: u32,
+    #[serde(rename = "isHltv")]
+    pub is_hltv: bool,
+}
+
+/// PBDEMS2 magic header bytes for CS2 demo files.
+const PBDEMS2_MAGIC: &[u8; 8] = b"PBDEMS2\0";
+/// Bit 6 of the packet command byte signals snappy compression.
+const DEM_IS_COMPRESSED_BIT: u64 = 64;
+
 // ─────────────────────────────────────────
 //  All Tauri commands live in a submodule.
 //
@@ -691,6 +709,191 @@ pub mod commands {
         Ok(entries)
     }
 
+    // ── PBDEMS2 Demo Parser ───────────────────────────────────────────────
+
+    /// Read a protobuf varint from `data`. Returns (value, bytes_consumed).
+    fn pb_varint(data: &[u8]) -> (u64, usize) {
+        let mut val = 0u64;
+        let mut shift = 0u32;
+        let mut n = 0usize;
+        for &b in data.iter().take(10) {
+            val |= ((b & 0x7f) as u64) << shift;
+            shift += 7;
+            n += 1;
+            if b & 0x80 == 0 { break; }
+        }
+        (val, n)
+    }
+
+    /// A protobuf field value (only the types we actually need).
+    enum PbVal {
+        Varint(u64),
+        Bytes(Vec<u8>),
+    }
+
+    /// Iterate all protobuf fields in `data`.
+    fn pb_fields(data: &[u8]) -> Vec<(u32, PbVal)> {
+        let mut pos = 0;
+        let mut out = Vec::new();
+        while pos < data.len() {
+            let (tag, n) = pb_varint(&data[pos..]);
+            if n == 0 { break; }
+            pos += n;
+            let field_num = (tag >> 3) as u32;
+            match tag & 7 {
+                0 => {
+                    let (v, n) = pb_varint(&data[pos..]);
+                    if n == 0 { break; }
+                    pos += n;
+                    out.push((field_num, PbVal::Varint(v)));
+                }
+                1 => { if pos + 8 > data.len() { break; } pos += 8; }
+                2 => {
+                    let (len, n) = pb_varint(&data[pos..]);
+                    if n == 0 { break; }
+                    pos += n;
+                    let len = len as usize;
+                    if pos + len > data.len() { break; }
+                    out.push((field_num, PbVal::Bytes(data[pos..pos + len].to_vec())));
+                    pos += len;
+                }
+                5 => { if pos + 4 > data.len() { break; } pos += 4; }
+                _ => break,
+            }
+        }
+        out
+    }
+
+    /// Parse a single CCSGameInfo_CPlayerInfo protobuf message.
+    ///
+    /// Field layout (CS2 public protobufs):
+    ///   1: uint64  xuid         (Steam ID 64)
+    ///   2: string  player_name
+    ///   3: uint32  bot
+    ///   4: bool    is_hltv
+    ///   5: uint32  team         (2 = T, 3 = CT)
+    fn parse_player_proto(data: &[u8]) -> Option<super::DemoPlayer> {
+        let mut xuid: u64 = 0;
+        let mut name = String::new();
+        let mut team_num: u32 = 0;
+        let mut is_hltv = false;
+        for (f, v) in pb_fields(data) {
+            match (f, v) {
+                (1, PbVal::Varint(v))  => xuid = v,
+                (2, PbVal::Bytes(b))   => name = String::from_utf8_lossy(&b).into_owned(),
+                (3, PbVal::Varint(v))  => { if v != 0 { return None; } } // skip bots
+                (4, PbVal::Varint(v))  => is_hltv = v != 0,
+                (5, PbVal::Varint(v))  => team_num = v as u32,
+                _ => {}
+            }
+        }
+        // Discard HLTV observers, bots, and entries without a valid SteamID64.
+        // Valid SteamID64 range starts at 76561197960265728 (0x0110000100000000).
+        if is_hltv || xuid < 76_561_197_960_265_728 || name.is_empty() {
+            return None;
+        }
+        Some(super::DemoPlayer { xuid: xuid.to_string(), name, team_num, is_hltv })
+    }
+
+    /// Walk CDemoFileInfo → CGameInfo.csgo → CCSGameInfo → repeated player_info.
+    fn parse_file_info_proto(data: &[u8]) -> Vec<super::DemoPlayer> {
+        for (f1, v1) in pb_fields(data) {
+            if f1 != 4 { continue; }
+            if let PbVal::Bytes(gi) = v1 {
+                for (f2, v2) in pb_fields(&gi) {
+                    if f2 != 4 { continue; }
+                    if let PbVal::Bytes(ci) = v2 {
+                        let players: Vec<_> = pb_fields(&ci)
+                            .into_iter()
+                            .filter(|(f, _)| *f == 4)
+                            .filter_map(|(_, v)| {
+                                if let PbVal::Bytes(b) = v { parse_player_proto(&b) } else { None }
+                            })
+                            .collect();
+                        if !players.is_empty() { return players; }
+                    }
+                }
+            }
+        }
+        vec![]
+    }
+
+    /// Parse a PBDEMS2 packet at position 0 of `data`.
+    /// Returns (raw_cmd, body, total_bytes_consumed).
+    fn read_pbdems2_packet(data: &[u8]) -> Option<(u64, Vec<u8>, usize)> {
+        let (cmd, n1) = pb_varint(data);
+        if n1 == 0 { return None; }
+        let (_, n2) = pb_varint(&data[n1..]);
+        if n2 == 0 { return None; }
+        let (size, n3) = pb_varint(&data[n1 + n2..]);
+        if n3 == 0 { return None; }
+        let hdr = n1 + n2 + n3;
+        let sz = size as usize;
+        if hdr + sz > data.len() { return None; }
+        let body = data[hdr..hdr + sz].to_vec();
+        let is_compressed = cmd & super::DEM_IS_COMPRESSED_BIT != 0;
+        let actual_body = if is_compressed {
+            match snap::raw::Decoder::new().decompress_vec(&body) {
+                Ok(d) => d,
+                Err(_) => body,
+            }
+        } else {
+            body
+        };
+        Some((cmd, actual_body, hdr + sz))
+    }
+
+    /// Parse player entries from a CS2 PBDEMS2 (.dem) file.
+    ///
+    /// Returns each real player's Steam ID64, display name, and team number.
+    /// Strategy 1: seek to `fileinfo_offset` in the 16-byte header → CDemoFileInfo proto.
+    /// Strategy 2 (fallback): scan from the start for DEM_FileInfo (type 4) packets.
+    #[tauri::command]
+    pub fn parse_demo_players(filepath: String) -> Result<Vec<super::DemoPlayer>, String> {
+        let data = fs::read(&filepath)
+            .map_err(|e| format!("Demo-Datei konnte nicht gelesen werden: {e}"))?;
+
+        if data.len() < 16 {
+            return Err("Datei zu klein — keine gültige CS2-Demo.".to_string());
+        }
+        if &data[..8] != super::PBDEMS2_MAGIC {
+            return Err("Kein gültiges CS2-Demo-Format (PBDEMS2 erwartet).".to_string());
+        }
+
+        // Strategy 1: fileinfo_offset (bytes 8..12 of the header, little-endian i32)
+        let fi_offset = i32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+        if fi_offset > 16 && fi_offset < data.len() {
+            if let Some((_, body, _)) = read_pbdems2_packet(&data[fi_offset..]) {
+                let players = parse_file_info_proto(&body);
+                if !players.is_empty() {
+                    println!("[CS2DM] parse_demo_players: {} players via fileinfo_offset={}", players.len(), fi_offset);
+                    return Ok(players);
+                }
+            }
+        }
+
+        // Strategy 2: scan for DEM_FileInfo (type 4)
+        println!("[CS2DM] parse_demo_players: fallback scan for DEM_FileInfo");
+        let mut pos = 16usize;
+        let mut scanned = 0u32;
+        while pos < data.len() && scanned < 2000 {
+            let Some((cmd, body, advance)) = read_pbdems2_packet(&data[pos..]) else { break };
+            let msg_type = cmd & !super::DEM_IS_COMPRESSED_BIT;
+            pos += advance;
+            scanned += 1;
+            if msg_type == 4 {
+                let players = parse_file_info_proto(&body);
+                if !players.is_empty() {
+                    println!("[CS2DM] parse_demo_players: {} players via scan after {} packets", players.len(), scanned);
+                    return Ok(players);
+                }
+            }
+        }
+
+        println!("[CS2DM] parse_demo_players: no players found");
+        Ok(vec![])
+    }
+
     /// Detect the Windows Downloads folder for the current user.
     /// Returns the path if found, or None if it cannot be determined.
     #[tauri::command]
@@ -863,6 +1066,7 @@ pub fn run() {
             commands::download_demo,
             commands::scan_downloads,
             commands::detect_downloads_folder,
+            commands::parse_demo_players,
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten der Anwendung");
