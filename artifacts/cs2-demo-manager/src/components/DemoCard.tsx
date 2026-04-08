@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  Play, FolderOpen, Pencil, Trash2, Check, X, Copy, AlertCircle, Loader2
+  Play, FolderOpen, Pencil, Trash2, Check, X, Copy, Terminal, Loader2
 } from "lucide-react";
 import type { Demo } from "../types/demo";
 import { useApp } from "../context/AppContext";
@@ -17,11 +17,15 @@ export function DemoCard({ demo }: DemoCardProps) {
   const { settings, renameDemo, deleteDemo, setStatus } = useApp();
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState(demo.displayName);
-  const [showFallback, setShowFallback] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
+  const [cs2Opened, setCs2Opened] = useState(false);
+  const [cmdCopied, setCmdCopied] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const cs2Status = getCS2Status(settings.cs2Path);
+  const playdemoArg = buildPlaydemoArg(demo.filename);
+  const consoleCmd = buildPlaydemoCommand(playdemoArg);
 
   async function handleLaunch() {
     if (cs2Status !== "found") {
@@ -31,23 +35,49 @@ export function DemoCard({ demo }: DemoCardProps) {
       });
       return;
     }
+
     setLaunching(true);
+    setShowGuide(false);
+    setCs2Opened(false);
+    setCmdCopied(false);
+
     try {
-      // Pass filename — cs2Service derives "replays/FILENAME" automatically.
-      const result = await launchDemoInCS2(demo.filename, settings.cs2Path);
-      if (result === "launched") {
-        setStatus({ type: "success", message: `Demo gestartet: ${demo.displayName}` });
-        setShowFallback(false);
-      } else {
-        setShowFallback(true);
-        setStatus({
-          type: "info",
-          message:
-            "Die Demo konnte nicht automatisch gestartet werden. Der Befehl wurde in die Zwischenablage kopiert.",
-        });
+      // ── Step 1: Copy the console command to clipboard (always reliable) ──
+      // This MUST happen before the launch attempt — the user needs it ready.
+      const copied = await copyToClipboard(consoleCmd);
+      setCmdCopied(copied);
+
+      console.log("[CS2DM] handleLaunch:", {
+        filename: demo.filename,
+        playdemoArg,
+        consoleCmd,
+        cs2Path: settings.cs2Path,
+      });
+
+      // ── Step 2: Try to open CS2 / Steam (best effort) ─────────────────
+      // spawn().is_ok() only proves a process was forked — it does NOT
+      // guarantee that Steam forwarded +playdemo to CS2. We treat this
+      // as "tried to open CS2" and always fall through to the guide.
+      let opened = false;
+      try {
+        const result = await launchDemoInCS2(demo.filename, settings.cs2Path);
+        console.log("[CS2DM] Rust launch result:", result);
+        opened = result === "launched";
+      } catch (err) {
+        console.warn("[CS2DM] Launch attempt failed:", err);
       }
-    } catch {
-      setStatus({ type: "error", message: "Fehler beim Starten der Demo. Bitte prüfe den CS2-Pfad." });
+      setCs2Opened(opened);
+
+      // ── Step 3: ALWAYS show the semi-automatic guide ───────────────────
+      // We cannot verify that the demo actually started, so we always show
+      // the instructions. The user just needs to press ~ and paste.
+      setShowGuide(true);
+      setStatus({
+        type: "info",
+        message: opened
+          ? "CS2 wird geöffnet. Öffne ~ und füge den kopierten Befehl ein."
+          : "Befehl kopiert. Starte CS2 und öffne die Konsole mit ~.",
+      });
     } finally {
       setLaunching(false);
     }
@@ -65,8 +95,7 @@ export function DemoCard({ demo }: DemoCardProps) {
   }
 
   async function handleCopyCommand() {
-    const cmd = buildPlaydemoCommand(buildPlaydemoArg(demo.filename));
-    const ok = await copyToClipboard(cmd);
+    const ok = await copyToClipboard(consoleCmd);
     if (ok) {
       setStatus({ type: "success", message: "Befehl in Zwischenablage kopiert." });
     } else {
@@ -187,7 +216,7 @@ export function DemoCard({ demo }: DemoCardProps) {
               ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
               : <Play className="w-3.5 h-3.5" />
             }
-            {launching ? "Startet..." : "In CS2 öffnen"}
+            {launching ? "Öffnet..." : "In CS2 öffnen"}
           </button>
 
           <button
@@ -209,21 +238,39 @@ export function DemoCard({ demo }: DemoCardProps) {
           </button>
         </div>
 
-        {/* Manual fallback instructions */}
-        {showFallback && (
-          <div className="mt-4 p-3 rounded-lg bg-blue-900/30 border border-blue-700/40">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-blue-300 text-xs font-semibold mb-2">Demo manuell starten:</p>
-                <ol className="text-blue-200/80 text-xs space-y-1 list-decimal list-inside">
-                  <li>Starte Counter-Strike 2</li>
-                  <li>Öffne die Entwicklerkonsole (Taste ~)</li>
-                  <li>Füge den kopierten Befehl ein (Strg+V)</li>
-                  <li>Drücke Enter</li>
+        {/* Semi-automatic guide — always shown after button click */}
+        {showGuide && (
+          <div className="mt-4 p-3 rounded-lg bg-white/5 border border-white/10">
+            <div className="flex items-start gap-2.5">
+              <Terminal className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-white/80 text-xs font-semibold mb-2.5">
+                  {cs2Opened ? "CS2 wird geöffnet — fast fertig:" : "CS2 manuell starten:"}
+                </p>
+
+                <ol className="text-white/60 text-xs space-y-1.5 list-decimal list-inside">
+                  {!cs2Opened && <li>Starte Counter-Strike 2</li>}
+                  <li>Drücke <kbd className="px-1 py-0.5 bg-white/10 rounded text-white/70 font-mono text-[10px]">~</kbd> um die Konsole zu öffnen</li>
+                  <li>
+                    Füge den Befehl ein{" "}
+                    <kbd className="px-1 py-0.5 bg-white/10 rounded text-white/70 font-mono text-[10px]">Strg+V</kbd>
+                    {cmdCopied && <span className="text-green-400 ml-1">(bereits kopiert ✓)</span>}
+                  </li>
+                  <li>Drücke <kbd className="px-1 py-0.5 bg-white/10 rounded text-white/70 font-mono text-[10px]">Enter</kbd></li>
                 </ol>
-                <div className="mt-2 bg-black/30 rounded px-2 py-1 font-mono text-xs text-white/60 truncate">
-                  {buildPlaydemoCommand(buildPlaydemoArg(demo.filename))}
+
+                {/* Command display with copy button */}
+                <div className="mt-2.5 flex items-center gap-2 bg-black/40 rounded-lg px-2.5 py-1.5">
+                  <code className="flex-1 font-mono text-xs text-orange-300/90 truncate">
+                    {consoleCmd}
+                  </code>
+                  <button
+                    onClick={handleCopyCommand}
+                    title="Nochmals kopieren"
+                    className="shrink-0 text-white/30 hover:text-white/70 transition-colors"
+                  >
+                    <Copy className="w-3 h-3" />
+                  </button>
                 </div>
               </div>
             </div>
