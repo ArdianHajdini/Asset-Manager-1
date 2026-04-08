@@ -10,16 +10,23 @@
  *   Correct command: playdemo replays/mydemo   (no .dem extension)
  *
  * Native launch hierarchy (Tauri / Windows desktop app):
- *   PRIMARY   → Rust finds steam.exe via Windows Registry
- *               (HKLM\SOFTWARE\WOW6432Node\Valve\Steam → InstallPath) and runs:
- *               steam.exe -applaunch 730 +playdemo replays/<name>
- *               Registry lookup works even when CS2 is on a secondary drive (D:\SteamLibrary).
- *   FALLBACK1 → Rust opens CS2 via Steam URI with +playdemo:
- *               cmd /C start "" "steam://rungame/730/+playdemo%20replays/<name>"
- *               Format mirrors the official Steam item-preview scheme (rungame, %20-encoded).
- *   FALLBACK2 → Rust spawns cs2.exe directly with current_dir set to .../game/csgo
- *               so relative replays/<name> paths resolve correctly.
- *   LAST      → returns "clipboard_fallback" — frontend copies the console cmd.
+ *   steam_handoff (PRIMARY)
+ *     Rust finds steam.exe via Registry (3 keys tried: HKLM WOW6432Node → HKCU → HKLM native,
+ *     then 7-dir path derivation as safety net). Runs:
+ *       steam.exe -applaunch 730 +playdemo replays/<name>
+ *     result.method = "steam_handoff"
+ *
+ *   steam_uri (FALLBACK1)
+ *     cmd /C start "" "steam://rungame/730/+playdemo%20replays/<name>"
+ *     Mirrors the official Steam item-preview URI scheme.
+ *     result.method = "steam_uri"
+ *
+ *   direct_cs2 (FALLBACK2)
+ *     Rust spawns cs2.exe with current_dir=.../game/csgo for correct relative paths.
+ *     result.method = "direct_cs2"
+ *
+ *   clipboard_fallback (LAST)
+ *     All methods failed → result.status = "clipboard_fallback", method = "none"
  *
  * Browser (dev preview only):
  *   Opens the Steam URI via window.open. Falls back to clipboard copy.
