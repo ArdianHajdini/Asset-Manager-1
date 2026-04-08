@@ -44,6 +44,22 @@ pub mod commands {
 
     use super::{DemoEntry, LaunchResult};
 
+    // ── Compression helpers ────────────────────────────────────────
+
+    /// Returns true if the byte slice starts with a gzip magic header (1F 8B).
+    fn is_gzip(bytes: &[u8]) -> bool {
+        bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b
+    }
+
+    /// Returns true if the byte slice starts with a zstandard magic header (28 B5 2F FD).
+    fn is_zstd(bytes: &[u8]) -> bool {
+        bytes.len() >= 4
+            && bytes[0] == 0x28
+            && bytes[1] == 0xB5
+            && bytes[2] == 0x2F
+            && bytes[3] == 0xFD
+    }
+
     // ── Helpers ───────────────────────────────────────
 
     fn file_modified_iso(path: &Path) -> String {
@@ -178,8 +194,21 @@ pub mod commands {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        if src_name.ends_with(".dem.gz") && extract_gz {
-            let dem_name = &src_name[..src_name.len() - 3];
+        if src_name.ends_with(".dem.zst") && extract_gz {
+            // Zstandard-compressed demo (.dem.zst → .dem)
+            let dem_name = src_name[..src_name.len() - 4].to_string(); // strip .zst
+            let dest_path = dest.join(&dem_name);
+            let file = fs::File::open(&src)
+                .map_err(|e| format!("Datei konnte nicht geöffnet werden: {}", e))?;
+            let decompressed = zstd::decode_all(BufReader::new(file))
+                .map_err(|e| format!("Entpacken (zstd) fehlgeschlagen: {}", e))?;
+            fs::write(&dest_path, &decompressed)
+                .map_err(|e| format!("Entpackte Datei konnte nicht gespeichert werden: {}", e))?;
+            demo_entry_from_path(&dest_path)
+                .ok_or_else(|| "Fehler beim Lesen der entpackten Demo.".to_string())
+        } else if src_name.ends_with(".dem.gz") && extract_gz {
+            // Gzip-compressed demo (.dem.gz → .dem)
+            let dem_name = &src_name[..src_name.len() - 3]; // strip .gz
             let dest_path = dest.join(dem_name);
             let gz_file = fs::File::open(&src)
                 .map_err(|e| format!("Datei konnte nicht geöffnet werden: {}", e))?;
@@ -197,6 +226,7 @@ pub mod commands {
             demo_entry_from_path(&dest_path)
                 .ok_or_else(|| "Fehler beim Lesen der entpackten Demo.".to_string())
         } else if src_name.ends_with(".dem") {
+            // Plain demo — copy as-is
             let dest_path = dest.join(&src_name);
             fs::copy(&src, &dest_path)
                 .map_err(|e| format!("Datei konnte nicht kopiert werden: {}", e))?;
@@ -204,7 +234,7 @@ pub mod commands {
                 .ok_or_else(|| "Fehler beim Lesen der kopierten Demo.".to_string())
         } else {
             Err(format!(
-                "Nicht unterstütztes Format: \"{}\". Nur .dem und .dem.gz werden akzeptiert.",
+                "Nicht unterstütztes Format: \"{}\". Akzeptiert werden: .dem, .dem.gz, .dem.zst",
                 src_name
             ))
         }
@@ -396,11 +426,35 @@ pub mod commands {
             .unwrap_or(&filename)
             .to_string();
 
-        let is_gzip = bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b;
-        let is_gz_ext =
-            clean_name.ends_with(".dem.gz") || clean_name.ends_with(".gz");
+        let raw = bytes.as_ref();
+        let detect_zstd = is_zstd(raw)
+            || clean_name.ends_with(".dem.zst")
+            || clean_name.ends_with(".zst");
+        let detect_gzip = !detect_zstd
+            && (is_gzip(raw)
+                || clean_name.ends_with(".dem.gz")
+                || clean_name.ends_with(".gz"));
 
-        if is_gzip || is_gz_ext {
+        if detect_zstd {
+            // ── Zstandard (.dem.zst → .dem) ──────────────────────────────
+            let dem_name = if clean_name.ends_with(".dem.zst") {
+                clean_name[..clean_name.len() - 8].to_string() + ".dem"
+            } else if clean_name.ends_with(".zst") {
+                clean_name[..clean_name.len() - 4].to_string()
+            } else {
+                format!("{}.dem", clean_name)
+            };
+            let dest_path = dest.join(&dem_name);
+            let cursor = std::io::Cursor::new(raw);
+            let decompressed = zstd::decode_all(cursor)
+                .map_err(|e| format!("Entpacken (zstd) fehlgeschlagen: {}", e))?;
+            fs::write(&dest_path, &decompressed).map_err(|e| {
+                format!("Datei konnte nicht gespeichert werden: {}", e)
+            })?;
+            demo_entry_from_path(&dest_path)
+                .ok_or_else(|| "Fehler beim Lesen der entpackten Demo.".to_string())
+        } else if detect_gzip {
+            // ── Gzip (.dem.gz → .dem) ─────────────────────────────────────
             let dem_name = if clean_name.ends_with(".dem.gz") {
                 clean_name[..clean_name.len() - 7].to_string() + ".dem"
             } else if clean_name.ends_with(".gz") {
@@ -408,32 +462,29 @@ pub mod commands {
             } else {
                 format!("{}.dem", clean_name)
             };
-
             let dest_path = dest.join(&dem_name);
-            let cursor = std::io::Cursor::new(bytes.as_ref());
+            let cursor = std::io::Cursor::new(raw);
             let mut decoder = GzDecoder::new(cursor);
             let mut decompressed = Vec::new();
             decoder.read_to_end(&mut decompressed).map_err(|e| {
-                format!("Entpacken fehlgeschlagen: {}", e)
+                format!("Entpacken (gzip) fehlgeschlagen: {}", e)
             })?;
-
             fs::write(&dest_path, &decompressed).map_err(|e| {
                 format!("Datei konnte nicht gespeichert werden: {}", e)
             })?;
-
             demo_entry_from_path(&dest_path)
                 .ok_or_else(|| "Fehler beim Lesen der entpackten Demo.".to_string())
         } else {
+            // ── Plain .dem ────────────────────────────────────────────────
             let dem_name = if clean_name.ends_with(".dem") {
                 clean_name
             } else {
                 format!("{}.dem", clean_name)
             };
             let dest_path = dest.join(&dem_name);
-            fs::write(&dest_path, bytes.as_ref()).map_err(|e| {
+            fs::write(&dest_path, raw).map_err(|e| {
                 format!("Datei konnte nicht gespeichert werden: {}", e)
             })?;
-
             demo_entry_from_path(&dest_path)
                 .ok_or_else(|| "Fehler beim Lesen der Demo.".to_string())
         }

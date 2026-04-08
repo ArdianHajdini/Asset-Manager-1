@@ -115,7 +115,7 @@ export async function importDemoFromPath(
  * Build a demo entry from a browser File object (fallback for non-Tauri environments).
  */
 export function buildDemoFromFile(file: File, targetDir: string): Omit<Demo, "id"> {
-  const name = file.name.replace(/\.gz$/, "");
+  const name = file.name.replace(/\.(gz|zst)$/, "");
   const displayName = name.replace(/\.dem$/, "");
   return {
     filename: name,

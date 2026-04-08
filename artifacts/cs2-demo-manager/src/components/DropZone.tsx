@@ -53,10 +53,10 @@ export function DropZone({ onSuccess }: DropZoneProps) {
 
   async function handleTauriPath(path: string) {
     const name = path.split(/[\\/]/).pop() ?? "";
-    if (!name.endsWith(".dem") && !name.endsWith(".dem.gz")) {
+    if (!name.endsWith(".dem") && !name.endsWith(".dem.gz") && !name.endsWith(".dem.zst")) {
       setStatus({
         type: "error",
-        message: `Diese Datei wird nicht unterstützt: „${name}". Nur .dem und .dem.gz Dateien werden akzeptiert.`,
+        message: `Diese Datei wird nicht unterstützt: „${name}". Nur .dem, .dem.gz und .dem.zst Dateien werden akzeptiert.`,
       });
       return;
     }
@@ -64,7 +64,7 @@ export function DropZone({ onSuccess }: DropZoneProps) {
     try {
       await importDemoFromPath(path, settings.demoDirectory, settings.autoExtractGz);
       await refreshDemos();
-      setStatus({ type: "success", message: `Demo importiert: „${name.replace(/\.gz$/, "").replace(/\.dem$/, "")}"` });
+      setStatus({ type: "success", message: `Demo importiert: „${name.replace(/\.(gz|zst)$/, "").replace(/\.dem$/, "")}"` });
       onSuccess?.();
     } catch (err) {
       setStatus({ type: "error", message: String(err) });
@@ -75,14 +75,14 @@ export function DropZone({ onSuccess }: DropZoneProps) {
 
   // ── HTML drag-drop (browser fallback) ───────────────────────────────────
   function isValidFile(name: string) {
-    return name.endsWith(".dem") || name.endsWith(".dem.gz");
+    return name.endsWith(".dem") || name.endsWith(".dem.gz") || name.endsWith(".dem.zst");
   }
 
   async function processFile(file: File) {
     if (!isValidFile(file.name)) {
       setStatus({
         type: "error",
-        message: `Diese Datei wird nicht unterstützt: „${file.name}". Nur .dem und .dem.gz Dateien werden akzeptiert.`,
+        message: `Diese Datei wird nicht unterstützt: „${file.name}". Nur .dem, .dem.gz und .dem.zst Dateien werden akzeptiert.`,
       });
       return;
     }
@@ -122,7 +122,7 @@ export function DropZone({ onSuccess }: DropZoneProps) {
       const result = await open({
         multiple: true,
         filters: [
-          { name: "CS2 Demos", extensions: ["dem", "gz"] },
+          { name: "CS2 Demos", extensions: ["dem", "gz", "zst"] },
           { name: "Alle Dateien", extensions: ["*"] },
         ],
       });
@@ -155,7 +155,7 @@ export function DropZone({ onSuccess }: DropZoneProps) {
       <input
         ref={inputRef}
         type="file"
-        accept=".dem,.gz"
+        accept=".dem,.dem.gz,.dem.zst,.gz,.zst"
         multiple
         className="hidden"
         onChange={handleFileInput}
@@ -187,8 +187,8 @@ export function DropZone({ onSuccess }: DropZoneProps) {
         </p>
         <p className="text-white/35 text-sm mt-1">
           {isTauri()
-            ? "oder klicken für Dateiauswahl-Dialog · .dem und .dem.gz"
-            : "oder klicken zum Auswählen · .dem und .dem.gz"}
+            ? "oder klicken für Dateiauswahl-Dialog · .dem, .dem.gz, .dem.zst"
+            : "oder klicken zum Auswählen · .dem, .dem.gz, .dem.zst"}
         </p>
       </div>
     </div>

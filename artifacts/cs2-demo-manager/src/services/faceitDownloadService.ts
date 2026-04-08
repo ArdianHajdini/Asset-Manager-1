@@ -4,7 +4,7 @@
  * Full download flow:
  *   1. Fetch match details to get demo_url[]
  *   2. Start download (Tauri: Rust command; browser: window.open fallback)
- *   3. Rust backend extracts .dem.gz → .dem automatically
+ *   3. Rust backend extracts .dem.zst or .dem.gz → .dem automatically
  *   4. Save to configured demo folder
  *   5. Register in the local demo library
  *
@@ -55,11 +55,11 @@ export function demoFilenameFromUrl(url: string, matchId: string): string {
   try {
     const pathname = new URL(url).pathname;
     const raw = pathname.split("/").pop() ?? "";
-    if (raw.endsWith(".dem") || raw.endsWith(".dem.gz")) return raw;
+    if (raw.endsWith(".dem") || raw.endsWith(".dem.gz") || raw.endsWith(".dem.zst")) return raw;
   } catch {
     // URL parsing failed — use matchId fallback
   }
-  return `faceit_${matchId}.dem.gz`;
+  return `faceit_${matchId}.dem.zst`;
 }
 
 /** Display name for a downloaded FACEIT demo. */
