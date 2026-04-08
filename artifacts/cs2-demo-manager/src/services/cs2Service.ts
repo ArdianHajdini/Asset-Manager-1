@@ -10,13 +10,15 @@
  *   Correct command: playdemo replays/mydemo   (no .dem extension)
  *
  * Native launch hierarchy (Tauri / Windows desktop app):
- *   PRIMARY  → Rust finds steam.exe (7 dirs up from cs2.exe) and runs:
- *              steam.exe -applaunch 730 +playdemo replays/<name>
- *              Most reliable — no URI parsing, no shell space-splitting.
- *   FALLBACK1 → Rust runs:
- *              cmd /C start "" "steam://rungameid/730//+playdemo%20replays/<name>"
- *              Space is %20 (URL-encoded). A literal space splits the URI.
- *   FALLBACK2 → Rust spawns cs2.exe directly with +playdemo arg.
+ *   PRIMARY   → Rust finds steam.exe via Windows Registry
+ *               (HKLM\SOFTWARE\WOW6432Node\Valve\Steam → InstallPath) and runs:
+ *               steam.exe -applaunch 730 +playdemo replays/<name>
+ *               Registry lookup works even when CS2 is on a secondary drive (D:\SteamLibrary).
+ *   FALLBACK1 → Rust opens CS2 via Steam URI *without* +playdemo:
+ *               cmd /C start "" "steam://rungameid/730"
+ *               Steam protocol cannot reliably pass +commands; clipboard is the fallback.
+ *   FALLBACK2 → Rust spawns cs2.exe directly with current_dir set to .../game/csgo
+ *               so relative replays/<name> paths resolve correctly.
  *   LAST      → returns "clipboard_fallback" — frontend copies the console cmd.
  *
  * Browser (dev preview only):
