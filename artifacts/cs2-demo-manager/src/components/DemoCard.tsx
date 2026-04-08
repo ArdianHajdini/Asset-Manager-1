@@ -61,7 +61,8 @@ export function DemoCard({ demo }: DemoCardProps) {
 
   // Computed rosters from parsed players
   const rosters: DemoRosters | null = parsedPlayers ? buildRosters(parsedPlayers) : null;
-  const playersForMode = getPlayersForMode(voiceMode, rosters);
+  // Use the stored Steam ID to correctly determine own/enemy team
+  const playersForMode = getPlayersForMode(voiceMode, rosters, settings.steamId || undefined);
 
   // ── Parse demo on mount (Tauri only) ─────────────────────────────────────
   useEffect(() => {
