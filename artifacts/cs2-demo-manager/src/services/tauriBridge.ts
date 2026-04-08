@@ -38,10 +38,10 @@ export interface TauriDemoEntry {
 }
 
 export interface TauriLaunchResult {
-  // "launched" = Steam (or direct cs2.exe) was successfully spawned
-  // "clipboard_fallback" = all launch methods failed; command contains the console cmd to paste
   status: "launched" | "clipboard_fallback";
   command?: string;
+  method?: "steam_exe_applaunch" | "steam_uri_open" | "direct_cs2" | "none";
+  note?: string;
 }
 
 /** Scan a directory for .dem files and return metadata. */
