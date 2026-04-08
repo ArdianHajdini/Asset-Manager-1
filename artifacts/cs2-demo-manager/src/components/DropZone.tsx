@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Upload, FileArchive, Loader2 } from "lucide-react";
+import { Upload, FileArchive, Loader2, AlertTriangle, MonitorOff } from "lucide-react";
 import { useApp } from "../context/AppContext";
 import { buildDemoFromFile, importDemoFromPath } from "../services/demoService";
 import { isTauri } from "../services/tauriBridge";
@@ -10,18 +10,13 @@ interface DropZoneProps {
 }
 
 export function DropZone({ onSuccess }: DropZoneProps) {
-  const { settings, addDemoToLibrarySync, setDemos, setStatus, refreshDemos } = useApp();
+  const { settings, addDemoToLibrarySync, setStatus, refreshDemos } = useApp();
   const [dragging, setDragging] = useState(false);
   const [importing, setImporting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  // Guard against Tauri click-through: when a native dialog closes, the OS
-  // fires a synthetic click on the WebView at the last cursor position.
-  // This ref blocks re-opening the picker until the click-through window passes.
   const isPickerOpenRef = useRef(false);
 
   // ── Tauri drag-drop event listener ──────────────────────────────────────
-  // In Tauri, the HTML drag-drop API does not give us real file paths.
-  // We listen to the Tauri-specific drag-drop event to get actual paths.
   useEffect(() => {
     if (!isTauri()) return;
 
@@ -49,12 +44,11 @@ export function DropZone({ onSuccess }: DropZoneProps) {
       }
     })();
 
-    return () => {
-      unlisten?.();
-    };
+    return () => { unlisten?.(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings]);
 
+  // ── Core Tauri import handler ────────────────────────────────────────────
   async function handleTauriPath(path: string) {
     const name = path.split(/[\\/]/).pop() ?? "";
 
@@ -63,7 +57,7 @@ export function DropZone({ onSuccess }: DropZoneProps) {
       setStatus({
         type: "error",
         message:
-          "Kein CS2 Replay-Ordner konfiguriert. Bitte die Einstellungen öffnen und CS2 automatisch erkennen lassen.",
+          "Kein CS2 Replay-Ordner konfiguriert. Bitte die Einstellungen öffnen → CS2 automatisch erkennen lassen.",
       });
       return;
     }
@@ -71,10 +65,11 @@ export function DropZone({ onSuccess }: DropZoneProps) {
     if (!name.endsWith(".dem") && !name.endsWith(".dem.gz") && !name.endsWith(".dem.zst")) {
       setStatus({
         type: "error",
-        message: `Diese Datei wird nicht unterstützt: „${name}". Nur .dem, .dem.gz und .dem.zst Dateien werden akzeptiert.`,
+        message: `Nicht unterstütztes Format: „${name}". Erlaubt: .dem, .dem.gz, .dem.zst`,
       });
       return;
     }
+
     setImporting(true);
     try {
       console.log("[CS2DM] Import:", {
@@ -82,25 +77,28 @@ export function DropZone({ onSuccess }: DropZoneProps) {
         destDir: settings.demoDirectory,
         extractGz: settings.autoExtractGz,
       });
+
       const demo = await importDemoFromPath(path, settings.demoDirectory, settings.autoExtractGz);
+
       console.log("[CS2DM] Import result:", {
         filepath: demo.filepath,
         directory: demo.directory,
         filename: demo.filename,
+        inReplayFolder: demo.directory === settings.demoDirectory,
       });
-      // Verify the demo landed in the correct replay folder
-      const inReplayFolder = demo.directory === settings.demoDirectory;
-      if (!inReplayFolder) {
-        console.warn("[CS2DM] Import directory mismatch!", {
+
+      if (demo.directory !== settings.demoDirectory) {
+        console.warn("[CS2DM] Directory mismatch:", {
           expected: settings.demoDirectory,
           actual: demo.directory,
         });
       }
+
       await refreshDemos();
       const displayBase = name.replace(/\.(gz|zst)$/, "").replace(/\.dem$/, "");
       setStatus({
         type: "success",
-        message: `Demo importiert: „${displayBase}" → ${demo.filepath}`,
+        message: `Demo entpackt und gespeichert: „${displayBase}" → ${demo.filepath}`,
       });
       onSuccess?.();
     } catch (err) {
@@ -111,7 +109,7 @@ export function DropZone({ onSuccess }: DropZoneProps) {
     }
   }
 
-  // ── HTML drag-drop (browser fallback) ───────────────────────────────────
+  // ── Browser HTML drop (non-Tauri only) ──────────────────────────────────
   function isValidFile(name: string) {
     return name.endsWith(".dem") || name.endsWith(".dem.gz") || name.endsWith(".dem.zst");
   }
@@ -120,50 +118,35 @@ export function DropZone({ onSuccess }: DropZoneProps) {
     if (!isValidFile(file.name)) {
       setStatus({
         type: "error",
-        message: `Diese Datei wird nicht unterstützt: „${file.name}". Nur .dem, .dem.gz und .dem.zst Dateien werden akzeptiert.`,
+        message: `Nicht unterstütztes Format: „${file.name}". Erlaubt: .dem, .dem.gz, .dem.zst`,
       });
       return;
     }
-    // Browser mode: we can't copy to the replay folder, so add a clear notice
-    const demo = buildDemoFromFile(file, settings.demoDirectory || "browser");
+    // In browser mode we can only add metadata — no filesystem access
+    const demo = buildDemoFromFile(file, "browser-preview");
     addDemoToLibrarySync(demo);
-    if (!isTauri()) {
-      setStatus({
-        type: "info",
-        message: `Demo zur Bibliothek hinzugefügt (Browser-Vorschau). Im nativen Desktop-Modus wird die Datei automatisch in den CS2 Replay-Ordner kopiert.`,
-      });
-    } else {
-      setStatus({ type: "success", message: `Demo importiert: „${demo.displayName}"` });
-    }
+    setStatus({
+      type: "info",
+      message: "Vorschau-Modus: Demo zur Liste hinzugefügt, aber NICHT in den CS2-Ordner kopiert. Das funktioniert nur in der nativen Windows-App.",
+    });
     onSuccess?.();
   }
 
   function handleBrowserDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragging(false);
-    if (isTauri()) return; // Handled by Tauri event
+    if (isTauri()) return;
     Array.from(e.dataTransfer.files).forEach(processFile);
   }
 
   function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    if (isTauri()) {
-      // In Tauri, HTML file input gives us File objects but not their real paths.
-      // We use the file input only as a fallback and process the files as browser blobs.
-      files.forEach(processFile);
-    } else {
-      files.forEach(processFile);
-    }
+    Array.from(e.target.files ?? []).forEach(processFile);
     e.target.value = "";
   }
 
   // ── Tauri native file picker ─────────────────────────────────────────────
   const handleTauriFilePicker = useCallback(async (e: React.MouseEvent) => {
-    // Always stop propagation so this click never reaches parent elements.
     e.stopPropagation();
-
-    // Guard: block re-entry while picker is open OR during the click-through
-    // window that follows a native dialog closing on Windows.
     if (importing || isPickerOpenRef.current) return;
 
     if (!isTauri()) {
@@ -171,12 +154,11 @@ export function DropZone({ onSuccess }: DropZoneProps) {
       return;
     }
 
-    // Block picker if replay folder is not yet configured
     if (!settings.demoDirectory) {
       setStatus({
         type: "error",
         message:
-          "Kein CS2 Replay-Ordner konfiguriert. Bitte die Einstellungen öffnen und CS2 automatisch erkennen lassen.",
+          "Kein CS2 Replay-Ordner konfiguriert. Bitte die Einstellungen öffnen → CS2 automatisch erkennen lassen.",
       });
       return;
     }
@@ -197,21 +179,65 @@ export function DropZone({ onSuccess }: DropZoneProps) {
         await handleTauriPath(path);
       }
     } catch {
-      // dialog plugin not available — fall back to HTML input
       inputRef.current?.click();
     } finally {
-      // Delay before re-enabling: this absorbs the synthetic click the OS
-      // fires on the WebView when a native dialog loses focus / closes.
       setTimeout(() => { isPickerOpenRef.current = false; }, 400);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [importing, settings]);
 
+  // ── Browser-mode banner ─────────────────────────────────────────────────
+  if (!isTauri()) {
+    return (
+      <div className="space-y-3">
+        {/* Hard warning banner */}
+        <div className="flex items-start gap-3 p-4 rounded-xl border border-yellow-600/40 bg-yellow-900/15">
+          <MonitorOff className="w-5 h-5 text-yellow-400 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-yellow-300 text-sm font-semibold">Browser-Vorschau — kein Dateisystem-Zugriff</p>
+            <p className="text-yellow-200/60 text-xs mt-1 leading-relaxed">
+              Import, Entpacken und Kopieren in den CS2 Replay-Ordner funktionieren{" "}
+              <strong className="text-yellow-200/90">ausschließlich</strong> in der nativen Windows-Desktop-App.
+              Im Browser können keine Dateien auf die Festplatte geschrieben werden.
+            </p>
+            <p className="text-yellow-200/50 text-xs mt-2">
+              Baue die App mit GitHub Actions und starte die .exe — dann funktioniert alles automatisch.
+            </p>
+          </div>
+        </div>
+
+        {/* Disabled-looking drop zone */}
+        <div
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={handleBrowserDrop}
+          className="relative rounded-2xl border-2 border-dashed border-white/8 bg-white/1 flex flex-col items-center justify-center gap-3 py-10 px-8 text-center opacity-40 cursor-not-allowed select-none"
+        >
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".dem,.dem.gz,.dem.zst,.gz,.zst"
+            multiple
+            className="hidden"
+            onChange={handleFileInput}
+          />
+          <div className="w-14 h-14 rounded-2xl bg-white/8 flex items-center justify-center">
+            <Upload className="w-7 h-7 text-white/30" />
+          </div>
+          <div>
+            <p className="font-semibold text-sm text-white/40">Demo hier ablegen</p>
+            <p className="text-white/20 text-xs mt-1">Nur in der nativen Desktop-App verfügbar</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Tauri drop zone ─────────────────────────────────────────────────────
   return (
     <div
-      onDragOver={(e) => { e.preventDefault(); if (!isTauri()) setDragging(true); }}
-      onDragLeave={() => { if (!isTauri()) setDragging(false); }}
-      onDrop={handleBrowserDrop}
+      onDragOver={(e) => { e.preventDefault(); }}
+      onDragLeave={() => {}}
+      onDrop={(e) => { e.preventDefault(); }}
       onClick={handleTauriFilePicker}
       className={cn(
         "relative cursor-pointer rounded-2xl border-2 border-dashed transition-all duration-200",
@@ -250,16 +276,25 @@ export function DropZone({ onSuccess }: DropZoneProps) {
           dragging ? "text-orange-300" : "text-white/70"
         )}>
           {importing
-            ? "Demo wird importiert..."
+            ? "Demo wird entpackt und gespeichert..."
             : dragging
               ? "Datei loslassen zum Importieren"
               : "Demo hier ablegen"}
         </p>
         <p className="text-white/35 text-sm mt-1">
-          {isTauri()
-            ? "oder klicken für Dateiauswahl-Dialog · .dem, .dem.gz, .dem.zst"
-            : "oder klicken zum Auswählen · .dem, .dem.gz, .dem.zst"}
+          Klicken für Dateiauswahl · .dem, .dem.gz, .dem.zst · wird in CS2 Replay-Ordner kopiert
         </p>
+        {settings.demoDirectory && (
+          <p className="text-white/20 text-xs mt-2 font-mono truncate max-w-sm">
+            → {settings.demoDirectory}
+          </p>
+        )}
+        {!settings.demoDirectory && (
+          <div className="mt-2 flex items-center gap-1.5 justify-center">
+            <AlertTriangle className="w-3.5 h-3.5 text-yellow-500" />
+            <p className="text-yellow-500/70 text-xs">Replay-Ordner nicht konfiguriert</p>
+          </div>
+        )}
       </div>
     </div>
   );

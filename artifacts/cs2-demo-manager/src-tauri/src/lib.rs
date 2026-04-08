@@ -301,55 +301,86 @@ pub mod commands {
 
     // ── Commands — CS2 launcher ───────────────────────
 
-    /// Launch CS2 with a demo via the correct launch hierarchy:
+    /// Launch CS2 with a demo.
     ///
-    /// **Primary — Steam URI (Windows + Linux)**
-    ///   Uses the `steam://rungame/730/0/+playdemo+<arg>` URI protocol.
-    ///   On Windows this runs through `cmd /C start`, which calls ShellExecute
-    ///   and hands the URI to the Steam client's registered protocol handler.
-    ///   On Linux it uses `xdg-open`.
-    ///   Steam starts (or focuses) and passes the +playdemo argument to CS2.
+    /// Launch hierarchy (Windows):
     ///
-    /// **Fallback — direct cs2.exe spawn**
-    ///   Only used if the Steam URI handler call itself fails (Steam not installed,
-    ///   `cmd` not found, etc.).  Requires `cs2_exe_path` to exist on disk.
+    ///   PRIMARY  — steam.exe -applaunch 730 +playdemo <arg>
+    ///     Derives steam.exe from cs2_exe_path (goes up 7 dirs to Steam root).
+    ///     This is the most reliable method: Steam is already running on any
+    ///     gaming PC and handles game-launch bookkeeping (overlay, VAC, etc.).
+    ///     The +playdemo flag is passed directly, no URI encoding needed.
     ///
-    /// **Clipboard fallback**
-    ///   If both methods fail, returns status="clipboard_fallback" so the frontend
-    ///   can copy the console command and instruct the user to paste it manually.
+    ///   FALLBACK1 — cmd /C start "" "steam://rungame/730/0/+playdemo+<arg>"
+    ///     URI handler approach. Works when steam.exe isn't found at the
+    ///     derived path but Steam is registered as a URI handler in the registry.
+    ///
+    ///   FALLBACK2 — spawn cs2.exe directly with +playdemo arg
+    ///     Direct spawn. Only used if both Steam methods fail.
+    ///     Does not go through Steam (no overlay, VAC may warn).
+    ///
+    ///   LAST — returns status="clipboard_fallback"
+    ///     Frontend copies the console command so the user can paste it manually.
+    ///
+    /// The console command format for manual use is always:
+    ///   playdemo replays/DEMO_NAME  (no .dem extension)
     #[tauri::command]
     pub fn launch_cs2(
         cs2_exe_path: String,
-        // Relative playdemo argument, e.g. "replays/mydemo" (no .dem extension).
-        // CS2 resolves this relative to its csgo game directory, so the demo
-        // must live in <Steam>/steamapps/…/game/csgo/replays/.
         playdemo_arg: String,
     ) -> Result<LaunchResult, String> {
         let console_cmd = format!("playdemo {}", playdemo_arg);
-        // steam://rungame/<appid>/<user-placeholder>/+<args>
-        // App ID 730 = CS2. User placeholder "0" means "current logged-in user".
-        let steam_uri = format!("steam://rungame/730/0/+playdemo+{}", playdemo_arg);
 
-        // ── Primary: Steam URI ─────────────────────────────────────────────
+        // ── Derive steam root from cs2.exe path ───────────────────────────
+        // cs2.exe lives at:
+        //   <steam_root>/steamapps/common/Counter-Strike Global Offensive/game/bin/win64/cs2.exe
+        // Going up 7 parent dirs gives us <steam_root>.
+        fn derive_steam_root(cs2_exe: &str) -> Option<PathBuf> {
+            let mut p = PathBuf::from(cs2_exe);
+            for _ in 0..7 {
+                p = p.parent()?.to_path_buf();
+            }
+            Some(p)
+        }
+
         #[cfg(target_os = "windows")]
         {
-            // `cmd /C start "" "steam://..."` hands the URI to ShellExecute,
-            // which invokes the Steam URI handler registered in the Windows registry.
-            // The empty string second arg is the window title (required by `start`
-            // when the first arg is a quoted URI so `start` doesn't misparse it).
-            let steam_ok = Command::new("cmd")
+            // ── PRIMARY: steam.exe -applaunch ─────────────────────────────
+            if let Some(steam_root) = derive_steam_root(&cs2_exe_path) {
+                let steam_exe = steam_root.join("steam.exe");
+                if steam_exe.exists() {
+                    let ok = Command::new(&steam_exe)
+                        .args(["-applaunch", "730", "+playdemo", &playdemo_arg])
+                        .spawn()
+                        .is_ok();
+                    if ok {
+                        return Ok(LaunchResult {
+                            status: "gestartet".to_string(),
+                            command: Some(console_cmd),
+                        });
+                    }
+                }
+            }
+
+            // ── FALLBACK1: steam:// URI handler ───────────────────────────
+            // Encode the playdemo arg so the URI parser doesn't mangle slashes.
+            // steam://rungame/730/0/+playdemo+replays/DEMO_NAME
+            let steam_uri = format!(
+                "steam://rungame/730/0/+playdemo+{}",
+                playdemo_arg
+            );
+            let uri_ok = Command::new("cmd")
                 .args(["/C", "start", "", &steam_uri])
                 .spawn()
                 .is_ok();
-
-            if steam_ok {
+            if uri_ok {
                 return Ok(LaunchResult {
                     status: "gestartet".to_string(),
                     command: Some(console_cmd),
                 });
             }
 
-            // ── Fallback: direct cs2.exe ───────────────────────────────────
+            // ── FALLBACK2: direct cs2.exe spawn ───────────────────────────
             let exe = PathBuf::from(&cs2_exe_path);
             if exe.exists() {
                 let direct_ok = Command::new(&exe)
@@ -368,27 +399,29 @@ pub mod commands {
 
         #[cfg(target_os = "linux")]
         {
-            let steam_ok = Command::new("xdg-open").arg(&steam_uri).spawn().is_ok();
-            if steam_ok {
-                return Ok(LaunchResult {
-                    status: "gestartet".to_string(),
-                    command: Some(console_cmd),
-                });
+            // On Linux, Steam is usually in PATH or at ~/.local/share/Steam/steam.sh
+            let linux_steam_candidates = [
+                "steam",
+                "~/.local/share/Steam/steam.sh",
+            ];
+            for candidate in &linux_steam_candidates {
+                let ok = Command::new(candidate)
+                    .args(["-applaunch", "730", "+playdemo", &playdemo_arg])
+                    .spawn()
+                    .is_ok();
+                if ok {
+                    return Ok(LaunchResult {
+                        status: "gestartet".to_string(),
+                        command: Some(console_cmd),
+                    });
+                }
             }
+            // URI fallback
+            let uri = format!("steam://rungame/730/0/+playdemo+{}", playdemo_arg);
+            let _ = Command::new("xdg-open").arg(&uri).spawn();
         }
 
-        #[cfg(target_os = "macos")]
-        {
-            let steam_ok = Command::new("open").arg(&steam_uri).spawn().is_ok();
-            if steam_ok {
-                return Ok(LaunchResult {
-                    status: "gestartet".to_string(),
-                    command: Some(console_cmd),
-                });
-            }
-        }
-
-        // ── Both methods failed — clipboard fallback ───────────────────────
+        // ── LAST: clipboard fallback ──────────────────────────────────────
         Ok(LaunchResult {
             status: "clipboard_fallback".to_string(),
             command: Some(console_cmd),

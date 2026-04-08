@@ -38,7 +38,8 @@ export interface TauriDemoEntry {
 }
 
 export interface TauriLaunchResult {
-  status: "launched" | "clipboard_fallback";
+  // Rust returns "gestartet" on success, "clipboard_fallback" when all launch methods fail
+  status: "gestartet" | "clipboard_fallback";
   command?: string;
 }
 
