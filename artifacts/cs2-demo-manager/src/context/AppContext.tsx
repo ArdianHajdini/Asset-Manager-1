@@ -1,3 +1,6 @@
+// Vite Fast Refresh: this file exports both a Provider component and a hook,
+// which breaks partial HMR. Force a full page reload on every change.
+/* @refresh reset */
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
 import type { Demo, AppSettings, StatusMessage } from "../types/demo";
 import { loadDemos, loadSettings, saveSettings } from "../services/storage";
