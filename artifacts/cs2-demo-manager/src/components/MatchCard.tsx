@@ -442,7 +442,7 @@ export function MatchCard({ match }: MatchCardProps) {
                 {autoMuteAvailable
                   ? `${playersToHear?.length ?? 0} Spieler werden automatisch gehört (Gegenseite stumm) — Befehl unten kopieren.`
                   : rosters
-                    ? "Spieler-IDs nicht gefunden — Stummschaltung manuell über das CS2-Scoreboard."
+                    ? "Sprachfilter für diese Demo nicht verfügbar."
                     : "Demo wird noch analysiert…"}
               </div>
             )}
