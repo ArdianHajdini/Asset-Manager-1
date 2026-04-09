@@ -189,7 +189,7 @@ export function buildVoiceIndexBitmask(players: TauriDemoPlayer[]): number {
  * Examples:
  *   "none"                               → "voice_enable 0"
  *   "all"                                → "voice_enable 1"
- *   "own_team" with entity IDs (2,5,7)   → "tv_listen_voice_indices 164"
+ *   "own_team" with entity IDs (2,5,7)   → "tv_listen_voice_indices 164; tv_listen_voice_indices_h 0"
  *   "own_team" without IDs               → "voice_enable 1"
  */
 export function buildVoiceCommands(
@@ -207,7 +207,8 @@ export function buildVoiceCommands(
     case "enemy": {
       if (!playersToHear || !hasEntityIds(playersToHear)) return "voice_enable 1";
       const bitmask = buildVoiceIndexBitmask(playersToHear);
-      return `tv_listen_voice_indices ${bitmask}`;
+      // Send both low-bits and high-bits variant (h = slots 32–63, always 0 in CS2).
+      return `tv_listen_voice_indices ${bitmask}; tv_listen_voice_indices_h 0`;
     }
   }
 }
