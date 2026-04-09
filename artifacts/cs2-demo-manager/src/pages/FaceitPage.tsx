@@ -1,5 +1,8 @@
 import { useState } from "react";
-import { RefreshCw, LogOut, Loader2, AlertCircle, User, Shield, Key, Wifi, WifiOff, Info, Download } from "lucide-react";
+import {
+  RefreshCw, LogOut, Loader2, AlertCircle, User, Shield, Key,
+  Wifi, WifiOff, Info, Download, FolderSearch,
+} from "lucide-react";
 import { useFaceit } from "../context/FaceitContext";
 import { useApp } from "../context/AppContext";
 import { MatchCard } from "../components/MatchCard";
@@ -20,6 +23,7 @@ export function FaceitPage() {
   const [showApiKeyForm, setShowApiKeyForm] = useState(false);
   const [scanning, setScanning] = useState(false);
 
+  // ── Downloads-Ordner scannen ──────────────────────────────────────────────
   async function handleScanDownloads() {
     const folder = settings.downloadsFolder;
     const replayFolder = settings.demoDirectory;
@@ -98,7 +102,7 @@ export function FaceitPage() {
           </div>
           <h1 className="text-2xl font-bold text-white">FACEIT verbinden</h1>
           <p className="text-white/45 text-sm mt-2">
-            Verbinde dein FACEIT-Konto, um deine CS2-Matches zu sehen, Demos herunterzuladen und mit einem Klick zu starten.
+            Verbinde dein FACEIT-Konto, um deine CS2-Matches zu sehen und Demos zu verarbeiten.
           </p>
         </div>
 
@@ -199,14 +203,15 @@ export function FaceitPage() {
           </div>
         )}
 
-        {/* Info panel */}
+        {/* How it works */}
         <div className="mt-8 p-4 rounded-xl border border-white/6 bg-white/2">
-          <p className="text-white/40 text-xs font-medium mb-2">Was du nach dem Verbinden tun kannst:</p>
-          <ul className="text-white/30 text-xs space-y-1">
-            <li>• Letzte CS2-Matches anzeigen</li>
-            <li>• Demos direkt aus der App herunterladen</li>
-            <li>• .dem.gz automatisch entpacken</li>
-            <li>• Demo mit einem Klick in CS2 starten</li>
+          <p className="text-white/40 text-xs font-medium mb-2">So funktioniert es:</p>
+          <ul className="text-white/30 text-xs space-y-1.5">
+            <li>① Letzte CS2-Matches werden geladen und angezeigt</li>
+            <li>② „Auf FACEIT öffnen" — Match-Seite im Browser öffnen</li>
+            <li>③ Demo dort manuell herunterladen</li>
+            <li>④ „Downloads scannen" — Demo wird erkannt und verarbeitet</li>
+            <li>⑤ Demo mit einem Klick in CS2 starten</li>
           </ul>
         </div>
       </div>
@@ -265,10 +270,10 @@ export function FaceitPage() {
             <button
               onClick={handleScanDownloads}
               disabled={scanning}
-              title="Downloads-Ordner nach Demos durchsuchen"
+              title="Downloads-Ordner nach Demos durchsuchen und in den Replay-Ordner verarbeiten"
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-orange-500/30 bg-orange-500/8 hover:bg-orange-500/18 text-orange-300/70 hover:text-orange-300 text-xs font-medium transition-all disabled:opacity-50"
             >
-              {scanning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              {scanning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FolderSearch className="w-3.5 h-3.5" />}
               Downloads scannen
             </button>
           )}
@@ -293,6 +298,18 @@ export function FaceitPage() {
         </div>
       </div>
 
+      {/* Workflow hint banner */}
+      {isTauri() && (
+        <div className="mb-5 flex items-start gap-3 p-4 rounded-xl border border-white/8 bg-white/2">
+          <Download className="w-4 h-4 text-white/30 shrink-0 mt-0.5" />
+          <p className="text-white/35 text-xs">
+            <span className="text-white/55 font-medium">Demo herunterladen: </span>
+            Match-Seite auf FACEIT öffnen → Demo dort herunterladen → „Downloads scannen" drücken →
+            Demo wird automatisch entpackt und in den Replay-Ordner verschoben.
+          </p>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 mb-6">
         <Wifi className="w-3.5 h-3.5 text-[#FF5500]" />
         <span className="text-white/40 text-sm">Letzte CS2-Matches</span>
@@ -300,18 +317,6 @@ export function FaceitPage() {
           <span className="text-white/20 text-sm">({matches.length})</span>
         )}
       </div>
-
-      {/* Browser info banner */}
-      {!isTauri() && (
-        <div className="mb-5 flex items-start gap-3 p-4 rounded-xl border border-blue-700/25 bg-blue-900/10">
-          <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-          <p className="text-blue-300/70 text-xs">
-            <span className="text-blue-300 font-medium">Browser-Modus: </span>
-            Downloads werden als normale Browser-Downloads ausgelöst. Für automatisches Speichern und
-            direkten CS2-Start verwende die Desktop-App.
-          </p>
-        </div>
-      )}
 
       {/* Error state */}
       {matchError && (
@@ -350,8 +355,8 @@ export function FaceitPage() {
       {/* Match list */}
       {matches.length > 0 && (
         <div className="space-y-3">
-          {matches.map((match) => (
-            <MatchCard key={match.match_id} match={match} />
+          {matches.map((m) => (
+            <MatchCard key={m.match_id} match={m} />
           ))}
         </div>
       )}
