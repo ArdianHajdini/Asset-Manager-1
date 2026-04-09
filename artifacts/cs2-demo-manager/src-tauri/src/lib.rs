@@ -881,9 +881,12 @@ pub mod commands {
                     String::new()
                 };
 
-                // entity.index() IS the voice_mute slot.
+                // CS2 voice slot = entity index − 1 (0-based player_slot).
+                // entity.index() is the 1-based entity handle from the demo
+                // stream; tv_listen_voice_indices bit N = player slot N (0-based).
+                let voice_slot = entity.index().saturating_sub(1);
                 self.players
-                    .insert(entity.index(), PlayerEntry { xuid, name, team_num });
+                    .insert(voice_slot, PlayerEntry { xuid, name, team_num });
                 Ok(())
             }
         }
