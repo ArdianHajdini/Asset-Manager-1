@@ -10,14 +10,15 @@
  * 2. OAuth2 PKCE  (requires a FACEIT app CLIENT_ID from the developer portal)
  *    • Set VITE_FACEIT_CLIENT_ID in the environment
  *
- *    Desktop (Tauri) flow — RFC 8252 §7.3 loopback redirect:
- *      a. Rust starts a TCP listener on 127.0.0.1:14523 (fixed port) → returns port
- *      b. System browser opens FACEIT /oauth/authorize with redirect_uri=http://127.0.0.1:14523/callback
- *      c. User authorizes → FACEIT redirects browser to the local server
- *      d. Rust reads the ?code=&state= params, sends a friendly close page, emits
- *         a `faceit-oauth-callback` Tauri event
+ *    Desktop (Tauri) flow — embedded WebviewWindow:
+ *      a. Rust opens FACEIT /oauth/authorize in a Tauri window
+ *         with redirect_uri=https://127.0.0.1:14523/callback
+ *      b. User authorizes inside the Tauri window
+ *      c. FACEIT redirects the window to https://127.0.0.1:14523/callback
+ *      d. Rust's on_navigation handler intercepts the redirect (blocks it, no
+ *         actual server needed), extracts ?code=&state=, emits
+ *         `faceit-oauth-callback` Tauri event, closes the window
  *      e. Frontend receives the event, exchanges code for tokens via fetch()
- *         (CSP allows https://accounts.faceit.com)
  *
  *    Browser (dev/preview) flow:
  *      a. window.location.href → FACEIT /oauth/authorize with redirect_uri={origin}/faceit/callback
@@ -27,7 +28,7 @@
  */
 
 import type { FaceitConnection } from "../types/faceit";
-import { isTauri, tauriOpenUrlExternally, tauriStartOAuthListener } from "./tauriBridge";
+import { isTauri, tauriOpenOAuthWebview } from "./tauriBridge";
 
 // ─────────────────────────────────────────
 //  Constants
@@ -178,13 +179,13 @@ export async function startOAuthFlow(): Promise<FaceitConnection> {
   sessionStorage.setItem("faceit_pkce_state", state);
 
   if (isTauri()) {
-    // ── Tauri desktop: loopback redirect (RFC 8252 §7.3) ─────────────────────
-    // Start a local HTTP listener on port 14523 (fixed), then open the system browser.
-    // FACEIT redirects the browser to http://127.0.0.1:14523/callback — Rust
-    // reads the code/state and emits a `faceit-oauth-callback` Tauri event.
+    // ── Tauri desktop: WebviewWindow OAuth flow ───────────────────────────────
+    // Opens FACEIT's login page in an embedded Tauri window. The Rust code
+    // intercepts navigation to https://127.0.0.1:14523/callback before the
+    // webview tries to connect — no actual server is needed on that port.
+    // The code/state are extracted and emitted as a `faceit-oauth-callback` event.
 
-    const port = await tauriStartOAuthListener();
-    const redirectUri = `http://127.0.0.1:${port}/callback`;
+    const redirectUri = "https://127.0.0.1:14523/callback";
     sessionStorage.setItem("faceit_redirect_uri", redirectUri);
 
     const params = new URLSearchParams({
@@ -198,7 +199,7 @@ export async function startOAuthFlow(): Promise<FaceitConnection> {
     });
 
     const authUrl = `${FACEIT_OAUTH_BASE}/oauth/authorize?${params}`;
-    await tauriOpenUrlExternally(authUrl);
+    await tauriOpenOAuthWebview(authUrl);
 
     // Wait for the callback event from Rust (5-minute timeout)
     return new Promise<FaceitConnection>((resolve, reject) => {

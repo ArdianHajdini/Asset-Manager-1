@@ -199,19 +199,19 @@ export async function tauriOpenUrlExternally(url: string): Promise<void> {
 }
 
 /**
- * Start a local TCP listener on 127.0.0.1:14523 (fixed port).
- * Returns the port number (always 14523).
+ * Open FACEIT's OAuth authorization page in an embedded Tauri window.
  *
- * The listener accepts one HTTP request (the OAuth redirect from the browser),
- * parses the `code` and `state` query params, sends a friendly close page to
- * the browser, and emits a `faceit-oauth-callback` Tauri event.
+ * The window intercepts navigation to https://127.0.0.1:14523/callback,
+ * extracts the `code` and `state` query params, emits a
+ * `faceit-oauth-callback` Tauri event to the main window, and closes itself.
+ * No actual server needs to be running on port 14523.
  *
- * Use `listen("faceit-oauth-callback", ...)` from @tauri-apps/api/event to
- * receive the result.
+ * Listen for the result via:
+ *   listen("faceit-oauth-callback", ...) from @tauri-apps/api/event
  */
-export async function tauriStartOAuthListener(): Promise<number> {
+export async function tauriOpenOAuthWebview(authUrl: string): Promise<void> {
   const invoke = await getInvoke();
-  return invoke<number>("start_oauth_listener");
+  return invoke("open_oauth_webview", { authUrl });
 }
 
 /**

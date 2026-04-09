@@ -123,7 +123,7 @@ export function FaceitPage() {
                 <Info className="w-3 h-3 text-white/25 shrink-0 mt-0.5" />
                 <p className="text-white/30 text-xs leading-relaxed">
                   Im FACEIT Developer Portal folgende Redirect URI eintragen:{" "}
-                  <code className="text-white/55 font-mono">http://127.0.0.1:14523/callback</code>
+                  <code className="text-white/55 font-mono">https://127.0.0.1:14523/callback</code>
                 </p>
               </div>
             )}
