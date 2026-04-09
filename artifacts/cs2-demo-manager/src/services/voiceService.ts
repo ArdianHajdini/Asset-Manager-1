@@ -13,8 +13,10 @@
  *   players only. A warning is shown for missing players but no command is
  *   suppressed. Only when ZERO players have entityIds is null returned.
  *
- * Player slot numbers (entityId) come from the CDemoStringTables "userinfo"
- * string table inside the .dem file (Rust parser → TauriDemoPlayer.entityId).
+ * Player slot numbers (entityId) come from the source2-demo entity observer
+ * (entity.index() IS the voice_mute slot). The Rust parser falls back to the
+ * CDemoStringTables "userinfo" table only when the entity observer returns
+ * no players. Both paths populate TauriDemoPlayer.entityId.
  *
  * tv_listen_voice_indices takes a bitmask where bit N = hear player at slot N.
  * tv_listen_voice_indices_h covers slots 32–63 (always 0 in CS2 matches).
