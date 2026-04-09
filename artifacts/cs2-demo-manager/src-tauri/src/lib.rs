@@ -1519,9 +1519,11 @@ pub mod commands {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
-        let listener = TcpListener::bind("127.0.0.1:0")
+        // Fixed port so the redirect URI is predictable and can be registered
+        // in the FACEIT developer portal as http://127.0.0.1:14523/callback
+        let listener = TcpListener::bind("127.0.0.1:14523")
             .await
-            .map_err(|e| format!("Konnte keinen freien Port binden: {}", e))?;
+            .map_err(|e| format!("OAuth-Port 14523 konnte nicht gebunden werden: {}", e))?;
 
         let port = listener
             .local_addr()
