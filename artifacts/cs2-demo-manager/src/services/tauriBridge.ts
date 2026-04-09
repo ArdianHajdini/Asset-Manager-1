@@ -199,8 +199,8 @@ export async function tauriOpenUrlExternally(url: string): Promise<void> {
 }
 
 /**
- * Start a local TCP listener on 127.0.0.1 with a random free port.
- * Returns the port number.
+ * Start a local TCP listener on 127.0.0.1:14523 (fixed port).
+ * Returns the port number (always 14523).
  *
  * The listener accepts one HTTP request (the OAuth redirect from the browser),
  * parses the `code` and `state` query params, sends a friendly close page to
