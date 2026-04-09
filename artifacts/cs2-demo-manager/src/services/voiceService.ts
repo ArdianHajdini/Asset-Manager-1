@@ -2,29 +2,35 @@
  * voiceService.ts — CS2 voice mode selection and command generation.
  *
  * Modes:
- *   "all"       → voice_enable 1; tv_listen_voice_indices -1; tv_listen_voice_indices_h -1
- *   "none"      → voice_enable 0
- *   "own_team"  → tv_listen_voice_indices <bitmask of own-team slots>
- *   "enemy"     → tv_listen_voice_indices <bitmask of enemy slots>
+ *   "all"     → voice_enable 1; tv_listen_voice_indices -1; tv_listen_voice_indices_h -1
+ *   "none"    → voice_enable 0
+ *   "team_t"  → tv_listen_voice_indices <bitmask of Terrorist slots>
+ *   "team_ct" → tv_listen_voice_indices <bitmask of Counter-Terrorist slots>
+ *
+ * Team identification uses ONLY demo data (m_iTeamNum from entity observer):
+ *   teamNum === 2 → Terrorist
+ *   teamNum === 3 → Counter-Terrorist
+ *
+ * No FACEIT player data is used for voice mapping or team splitting.
+ * XUID (m_steamID) and name (m_iszPlayerName) come exclusively from the demo.
  *
  * PARTIAL MATCHING:
- *   For own_team / enemy mode a command is generated as long as at least
- *   ONE player has a known entityId. The bitmask is built from the known
- *   players only. A warning is shown for missing players but no command is
- *   suppressed. Only when ZERO players have entityIds is null returned.
+ *   For team_t / team_ct, a command is generated as long as at least ONE player
+ *   in that team has a known entityId. Missing slots are absent from the bitmask
+ *   and the caller shows a warning. Only when ZERO slots are known is null returned.
  *
  * Player slot numbers (entityId) come from the source2-demo entity observer
  * (entity.index() IS the voice_mute slot). The Rust parser falls back to the
  * CDemoStringTables "userinfo" table only when the entity observer returns
  * no players. Both paths populate TauriDemoPlayer.entityId.
  *
- * tv_listen_voice_indices takes a bitmask where bit N = hear player at slot N.
- * tv_listen_voice_indices_h covers slots 32–63 (always 0 in CS2 matches).
+ * tv_listen_voice_indices  — signed 32-bit bitmask for slots 0–31
+ * tv_listen_voice_indices_h — signed 32-bit bitmask for slots 32–63 (always 0 in CS2)
  */
 
 import type { TauriDemoPlayer } from "./tauriBridge";
 
-export type VoiceMode = "all" | "none" | "own_team" | "enemy";
+export type VoiceMode = "all" | "none" | "team_t" | "team_ct";
 
 export interface VoiceOption {
   mode: VoiceMode;
@@ -44,14 +50,14 @@ export const VOICE_OPTIONS: VoiceOption[] = [
     description: "Alle Stimmen deaktiviert",
   },
   {
-    mode: "own_team",
-    label: "Eigenes Team",
-    description: "Nur das eigene Team hören — Gegner werden stummgeschaltet",
+    mode: "team_t",
+    label: "Team T",
+    description: "Nur Terroristen hören — Counter-Terroristen werden stummgeschaltet",
   },
   {
-    mode: "enemy",
-    label: "Gegner",
-    description: "Nur Gegner hören — eigenes Team wird stummgeschaltet",
+    mode: "team_ct",
+    label: "Team CT",
+    description: "Nur Counter-Terroristen hören — Terroristen werden stummgeschaltet",
   },
 ];
 
@@ -59,9 +65,9 @@ export const VOICE_OPTIONS: VoiceOption[] = [
 
 /** Categorised player rosters for a demo, derived from TauriDemoPlayer[]. */
 export interface DemoRosters {
-  /** Team Terrorist players (teamNum === 2) */
+  /** Terrorist players (teamNum === 2) */
   terrorists: TauriDemoPlayer[];
-  /** Team Counter-Terrorist players (teamNum === 3) */
+  /** Counter-Terrorist players (teamNum === 3) */
   counterTerrorists: TauriDemoPlayer[];
   /** All players (both teams) */
   all: TauriDemoPlayer[];
@@ -77,67 +83,36 @@ export function buildRosters(players: TauriDemoPlayer[]): DemoRosters {
 }
 
 /**
- * Given rosters and the user's own Steam ID, determine which team the user
- * is on (T or CT). Returns null if the Steam ID is not found.
+ * Return the players to DISPLAY for a given voice mode.
+ * Team split is based solely on m_iTeamNum from the demo (2=T, 3=CT).
+ * No FACEIT data or userXuid is needed.
  */
-export function getUserTeam(
-  rosters: DemoRosters,
-  userXuid: string | undefined
-): "T" | "CT" | null {
-  if (!userXuid) return null;
-  if (rosters.terrorists.some((p) => p.xuid === userXuid)) return "T";
-  if (rosters.counterTerrorists.some((p) => p.xuid === userXuid)) return "CT";
-  return null;
-}
-
-/**
- * Return the "own team" and "enemy team" player arrays for a given user.
- * Falls back to T/CT split when the user's team cannot be identified.
- */
-export function splitTeams(
-  rosters: DemoRosters,
-  userXuid: string | undefined
-): { ownTeam: TauriDemoPlayer[]; enemyTeam: TauriDemoPlayer[] } {
-  const side = getUserTeam(rosters, userXuid);
-  if (side === "T") {
-    return { ownTeam: rosters.terrorists, enemyTeam: rosters.counterTerrorists };
-  }
-  if (side === "CT") {
-    return { ownTeam: rosters.counterTerrorists, enemyTeam: rosters.terrorists };
-  }
-  return { ownTeam: rosters.terrorists, enemyTeam: rosters.counterTerrorists };
-}
-
-/** Return the relevant player list to DISPLAY for a given voice mode. */
 export function getPlayersForMode(
   mode: VoiceMode,
-  rosters: DemoRosters | null,
-  userXuid?: string
+  rosters: DemoRosters | null
 ): TauriDemoPlayer[] | null {
   if (!rosters) return null;
-  const { ownTeam, enemyTeam } = splitTeams(rosters, userXuid);
   switch (mode) {
-    case "own_team": return ownTeam;
-    case "enemy":    return enemyTeam;
-    default:         return null;
+    case "team_t":  return rosters.terrorists;
+    case "team_ct": return rosters.counterTerrorists;
+    default:        return null;
   }
 }
 
 /**
- * Return the players that the user WANTS TO HEAR for a given voice mode.
- * Returns null for "all" / "none" (no per-player selection needed).
+ * Return the players the user WANTS TO HEAR for a given voice mode.
+ * Returns null for "all" / "none" (no per-player bitmask needed).
+ * Team split is based solely on m_iTeamNum from the demo.
  */
 export function getPlayersToHear(
   mode: VoiceMode,
-  rosters: DemoRosters | null,
-  userXuid?: string
+  rosters: DemoRosters | null
 ): TauriDemoPlayer[] | null {
   if (!rosters) return null;
-  const { ownTeam, enemyTeam } = splitTeams(rosters, userXuid);
   switch (mode) {
-    case "own_team": return ownTeam;
-    case "enemy":    return enemyTeam;
-    default:         return null;
+    case "team_t":  return rosters.terrorists;
+    case "team_ct": return rosters.counterTerrorists;
+    default:        return null;
   }
 }
 
@@ -151,14 +126,6 @@ export function playersWithEntityIds(players: TauriDemoPlayer[]): TauriDemoPlaye
 /** Players whose entity/slot ID could not be resolved. */
 export function playersMissingEntityIds(players: TauriDemoPlayer[]): TauriDemoPlayer[] {
   return players.filter((p) => p.entityId === undefined);
-}
-
-/**
- * @deprecated Use playersWithEntityIds(players).length > 0 instead.
- * Kept for any external callers; internally no longer used.
- */
-export function hasEntityIds(players: TauriDemoPlayer[]): boolean {
-  return players.length > 0 && players.every((p) => p.entityId !== undefined);
 }
 
 /**
@@ -196,18 +163,56 @@ export function buildVoiceIndexBitmask(players: TauriDemoPlayer[]): {
   return { low, high };
 }
 
+// ── Debug helper ─────────────────────────────────────────────────────────────
+
+/**
+ * Build a structured debug snapshot of all demo players and the computed bitmask.
+ * Logs to console automatically; also returns the data for in-UI display.
+ *
+ * Output includes:
+ *   - All players: name, team (T/CT), entityId (voice slot)
+ *   - Final bitmask low/high for the current voice mode
+ */
+export function buildVoiceDebugInfo(
+  allPlayers: TauriDemoPlayer[],
+  mode: VoiceMode,
+  playersToHear: TauriDemoPlayer[] | null
+): {
+  players: { name: string; team: string; slot: number | undefined; xuid: string }[];
+  mode: VoiceMode;
+  bitmask: { low: number; high: number } | null;
+  command: string | null;
+} {
+  const players = allPlayers.map((p) => ({
+    name: p.name,
+    team: p.teamNum === 2 ? "T" : p.teamNum === 3 ? "CT" : "?",
+    slot: p.entityId,
+    xuid: p.xuid || "(leer)",
+  }));
+
+  const bitmask = playersToHear
+    ? buildVoiceIndexBitmask(playersWithEntityIds(playersToHear))
+    : null;
+
+  const command = buildVoiceCommands(mode, playersToHear);
+
+  const debug = { players, mode, bitmask, command };
+  console.log("[CS2DM] Voice-Debug:", JSON.stringify(debug, null, 2));
+  return debug;
+}
+
 // ── Command builder ─────────────────────────────────────────────────────────
 
 /**
  * Build the CS2 console voice-setup commands for the selected mode.
  *
- * PARTIAL SUCCESS: for own_team / enemy, returns a command as long as at
+ * PARTIAL SUCCESS: for team_t / team_ct, returns a command as long as at
  * least ONE player has a resolved entityId. Missing players are simply
  * absent from the bitmask — the caller should warn the user.
  * Returns null only when ZERO players have entityIds.
  *
  * @param mode           - Voice mode selected by the user.
- * @param playersToHear  - Players the user wants to HEAR (their own side).
+ * @param playersToHear  - Players the user wants to HEAR (their chosen team).
  */
 export function buildVoiceCommands(
   mode: VoiceMode,
@@ -220,8 +225,8 @@ export function buildVoiceCommands(
     case "all":
       return "voice_enable 1; tv_listen_voice_indices -1; tv_listen_voice_indices_h -1";
 
-    case "own_team":
-    case "enemy": {
+    case "team_t":
+    case "team_ct": {
       if (!playersToHear) return null;
       const known = playersWithEntityIds(playersToHear);
       if (known.length === 0) return null;
