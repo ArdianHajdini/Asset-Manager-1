@@ -11,8 +11,8 @@
  *    • Set VITE_FACEIT_CLIENT_ID in the environment
  *
  *    Desktop (Tauri) flow — RFC 8252 §7.3 loopback redirect:
- *      a. Rust starts a TCP listener on 127.0.0.1 (random port) → returns port
- *      b. System browser opens FACEIT /oauth/authorize with redirect_uri=http://127.0.0.1:{port}/callback
+ *      a. Rust starts a TCP listener on 127.0.0.1:14523 (fixed port) → returns port
+ *      b. System browser opens FACEIT /oauth/authorize with redirect_uri=http://127.0.0.1:14523/callback
  *      c. User authorizes → FACEIT redirects browser to the local server
  *      d. Rust reads the ?code=&state= params, sends a friendly close page, emits
  *         a `faceit-oauth-callback` Tauri event
@@ -150,7 +150,7 @@ export async function connectWithApiKey(
  * Start the OAuth2 PKCE flow.
  *
  * Tauri (desktop):
- *   - Starts a local TCP listener on 127.0.0.1 (random port)
+ *   - Starts a local TCP listener on 127.0.0.1:14523 (fixed port)
  *   - Opens the FACEIT auth page in the system browser
  *   - Returns a Promise that resolves with the FaceitConnection once the
  *     user authorizes and the local callback server receives the redirect
@@ -179,8 +179,8 @@ export async function startOAuthFlow(): Promise<FaceitConnection> {
 
   if (isTauri()) {
     // ── Tauri desktop: loopback redirect (RFC 8252 §7.3) ─────────────────────
-    // Start a local HTTP listener on a random port, then open the system browser.
-    // FACEIT redirects the browser to http://127.0.0.1:{port}/callback — Rust
+    // Start a local HTTP listener on port 14523 (fixed), then open the system browser.
+    // FACEIT redirects the browser to http://127.0.0.1:14523/callback — Rust
     // reads the code/state and emits a `faceit-oauth-callback` Tauri event.
 
     const port = await tauriStartOAuthListener();

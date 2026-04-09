@@ -1503,7 +1503,7 @@ pub mod commands {
 
     // ── Command — OAuth: local loopback callback server ───────────
     //
-    // Binds a TCP listener on 127.0.0.1 with a random free port and returns
+    // Binds a TCP listener on 127.0.0.1:14523 (fixed port) and returns
     // the port immediately. A background task waits for the OAuth redirect
     // from the system browser, parses the `code` and `state` query params,
     // sends a friendly HTML close-page to the browser, and emits a Tauri
