@@ -19,9 +19,9 @@
  *   tv_listen_voice_indices 164; playdemo replays/matchname
  *   (164 = (1<<2)|(1<<5)|(1<<7) — slots 2, 5 and 7 are heard)
  *
- * When entityId values are absent the mode still shows the correct player list
- * (name / team) so the user can mute manually via the CS2 scoreboard, and the
- * fallback command is simply voice_enable 1; playdemo ...
+ * When entityId values are absent for "own_team" / "enemy" mode, no voice
+ * filter command can be generated. buildFullPlayCommand returns null in that
+ * case. The UI should block or label those modes as unavailable.
  */
 
 import type { TauriDemoPlayer } from "./tauriBridge";
@@ -180,22 +180,23 @@ export function buildVoiceIndexBitmask(players: TauriDemoPlayer[]): number {
 /**
  * Build the CS2 console voice-setup commands for the selected mode.
  *
+ * Returns null for "own_team" / "enemy" when entityIds are unavailable —
+ * the caller must treat null as "filter unavailable" and NOT generate a
+ * fake voice_enable command that would mislead the user.
+ *
  * @param mode           - Voice mode selected by the user.
  * @param playersToHear  - Players the user wants to HEAR (their own side).
- *                         When all players have entityId, tv_listen_voice_indices
- *                         is generated with the correct bitmask.
- *                         Falls back to voice_enable 1 when IDs are absent.
  *
  * Examples:
  *   "none"                               → "voice_enable 0"
  *   "all"                                → "voice_enable 1"
  *   "own_team" with entity IDs (2,5,7)   → "tv_listen_voice_indices 164; tv_listen_voice_indices_h 0"
- *   "own_team" without IDs               → "voice_enable 1"
+ *   "own_team" without IDs               → null  (filter unavailable)
  */
 export function buildVoiceCommands(
   mode: VoiceMode,
   playersToHear?: TauriDemoPlayer[] | null
-): string {
+): string | null {
   switch (mode) {
     case "none":
       return "voice_enable 0";
@@ -205,7 +206,7 @@ export function buildVoiceCommands(
 
     case "own_team":
     case "enemy": {
-      if (!playersToHear || !hasEntityIds(playersToHear)) return "voice_enable 1";
+      if (!playersToHear || !hasEntityIds(playersToHear)) return null;
       const bitmask = buildVoiceIndexBitmask(playersToHear);
       // Send both low-bits and high-bits variant (h = slots 32–63, always 0 in CS2).
       return `tv_listen_voice_indices ${bitmask}; tv_listen_voice_indices_h 0`;
@@ -216,13 +217,18 @@ export function buildVoiceCommands(
 /**
  * Build the full CS2 console command:
  *   <voiceSetup>; playdemo <playdemoArg>
+ *
+ * Returns null when the selected voice mode requires entity IDs that are
+ * not available. The UI must handle null by hiding the command and blocking
+ * the copy button for that mode.
  */
 export function buildFullPlayCommand(
   playdemoArg: string,
   voiceMode: VoiceMode,
   playersToHear?: TauriDemoPlayer[] | null
-): string {
+): string | null {
   const voiceCmd = buildVoiceCommands(voiceMode, playersToHear);
+  if (voiceCmd === null) return null;
   return `${voiceCmd}; playdemo ${playdemoArg}`;
 }
 
