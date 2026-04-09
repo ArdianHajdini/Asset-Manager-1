@@ -23,6 +23,7 @@ import {
   VOICE_OPTIONS,
   buildFullPlayCommand,
   buildRosters,
+  buildVoiceDebugInfo,
   getPlayersForMode,
   getPlayersToHear,
   playersWithEntityIds,
@@ -53,7 +54,7 @@ export function MatchCard({ match }: MatchCardProps) {
 
   // Voice mode for copy-command
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("all");
-  const [showVoicePicker, setShowVoicePicker] = useState(false);
+  const [showDebug, setShowDebug] = useState(false);
   const [cmdCopied, setCmdCopied] = useState(false);
   const [launching, setLaunching] = useState(false);
 
@@ -94,15 +95,14 @@ export function MatchCard({ match }: MatchCardProps) {
       ? buildPlaydemoArg(dlState.demoPath.split(/[\\/]/).pop() ?? "")
       : null;
 
-  // Computed rosters from parsed .dem players
+  // Computed rosters from parsed .dem players — team split uses m_iTeamNum from demo only
   const rosters: DemoRosters | null = parsedPlayers ? buildRosters(parsedPlayers) : null;
-  const userXuid = settings.steamId || undefined;
 
-  // Players displayed in the voice-mode player list
-  const playersForMode = getPlayersForMode(voiceMode, rosters, userXuid);
+  // Players displayed for the selected voice mode (T or CT)
+  const playersForMode = getPlayersForMode(voiceMode, rosters);
 
-  // Players to HEAR (their entityIds drive tv_listen_voice_indices)
-  const playersToHear = getPlayersToHear(voiceMode, rosters, userXuid);
+  // Players to HEAR — their entityIds drive tv_listen_voice_indices
+  const playersToHear = getPlayersToHear(voiceMode, rosters);
 
   // Players with and without resolved entity/slot IDs (for the selected mode)
   const knownPlayers = playersToHear ? playersWithEntityIds(playersToHear) : [];
@@ -110,7 +110,7 @@ export function MatchCard({ match }: MatchCardProps) {
 
   // True when at least ONE player has a known slot → partial command is possible
   const autoMuteAvailable =
-    (voiceMode === "own_team" || voiceMode === "enemy") &&
+    (voiceMode === "team_t" || voiceMode === "team_ct") &&
     knownPlayers.length > 0;
 
   const fullCommand = playdemoArg
@@ -391,8 +391,8 @@ export function MatchCard({ match }: MatchCardProps) {
           </div>
         )}
 
-        {/* Voice mode picker (only when demo is downloaded) */}
-        {isAlreadyDownloaded && showVoicePicker && (
+        {/* Voice mode picker — always visible when demo is downloaded */}
+        {isAlreadyDownloaded && (
           <div className="mb-3 p-3 rounded-lg bg-black/30 border border-white/6">
             <p className="text-white/40 text-xs mb-2 flex items-center gap-1.5">
               <Volume2 className="w-3 h-3" />
@@ -401,7 +401,7 @@ export function MatchCard({ match }: MatchCardProps) {
             </p>
             <div className="grid grid-cols-4 gap-1">
               {VOICE_OPTIONS.map((opt) => {
-                const needsRoster = opt.mode === "own_team" || opt.mode === "enemy";
+                const needsRoster = opt.mode === "team_t" || opt.mode === "team_ct";
                 const hasRoster = needsRoster && rosters !== null;
                 const isSelected = voiceMode === opt.mode;
                 const dotStatus = !needsRoster
@@ -444,7 +444,7 @@ export function MatchCard({ match }: MatchCardProps) {
             </div>
 
             {/* Auto-mute status banner */}
-            {(voiceMode === "own_team" || voiceMode === "enemy") && (
+            {(voiceMode === "team_t" || voiceMode === "team_ct") && (
               <div className={cn(
                 "mt-2 px-2.5 py-1.5 rounded-lg border text-[10px] flex items-center gap-1.5",
                 autoMuteAvailable
@@ -456,47 +456,57 @@ export function MatchCard({ match }: MatchCardProps) {
                 <Info className="w-3 h-3 shrink-0" />
                 {autoMuteAvailable
                   ? missingPlayers.length > 0
-                    ? `Sprachfilter teilweise verfügbar: ${knownPlayers.length} von ${(playersToHear?.length ?? 0)} Spielern erkannt — ${missingPlayers.length} Spieler fehlen im Befehl.`
-                    : `${knownPlayers.length} Spieler werden automatisch gehört (Gegenseite stumm) — Befehl unten kopieren.`
+                    ? `Sprachfilter teilweise verfügbar: ${knownPlayers.length} von ${(playersToHear?.length ?? 0)} Spielern erkannt — ${missingPlayers.length} Spieler fehlen.`
+                    : `${knownPlayers.length} Spieler werden automatisch gehört — Befehl unten kopieren.`
                   : rosters
                     ? "Sprachfilter für diese Demo nicht verfügbar."
                     : "Demo wird noch analysiert…"}
               </div>
             )}
 
-            {/* Player list for own_team / enemy — prefer parsed data, fall back to FACEIT roster */}
-            {(voiceMode === "own_team" || voiceMode === "enemy") && (
+            {/* Player list for selected team — demo data only (name + team + slot) */}
+            {(voiceMode === "team_t" || voiceMode === "team_ct") && playersForMode && playersForMode.length > 0 && (
               <div className="mt-2 p-2 rounded-lg bg-black/25 border border-white/5">
                 <p className="text-white/30 text-[10px] font-semibold mb-1 uppercase tracking-wider">
-                  {voiceMode === "own_team" ? "Eigenes Team" : "Gegner"}
+                  {voiceMode === "team_t" ? "Team T" : "Team CT"}
                 </p>
-                {playersForMode && playersForMode.length > 0 ? (
-                  /* Parsed roster with slot numbers */
-                  <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-                    {playersForMode.map((p) => (
-                      <span key={p.xuid} className="flex items-center gap-1 text-[10px]">
-                        <span className={cn("font-mono text-[9px] font-bold", teamColor(p.teamNum))}>{teamLabel(p.teamNum)}</span>
-                        <span className="text-white/50">{p.name}</span>
-                        {p.entityId !== undefined && (
-                          <span className="text-white/20 font-mono text-[8px]">#{p.entityId}</span>
-                        )}
-                      </span>
-                    ))}
-                  </div>
-                ) : (
-                  /* Fallback: FACEIT roster */
-                  <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                    {(voiceMode === "own_team" ? ownTeam : opponent).players.map((p) => (
-                      <span key={p.nickname} className="text-white/55 text-[11px]">{p.nickname}</span>
-                    ))}
-                  </div>
-                )}
+                <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                  {playersForMode.map((p) => (
+                    <span key={p.xuid || p.name} className="flex items-center gap-1 text-[10px]">
+                      <span className={cn("font-mono text-[9px] font-bold", teamColor(p.teamNum))}>{teamLabel(p.teamNum)}</span>
+                      <span className="text-white/50">{p.name}</span>
+                      {p.entityId !== undefined && (
+                        <span className="text-white/20 font-mono text-[8px]">#{p.entityId}</span>
+                      )}
+                    </span>
+                  ))}
+                </div>
               </div>
             )}
 
             {fullCommand && (
               <div className="mt-2 flex items-center gap-2 bg-black/40 rounded px-2.5 py-1.5">
                 <code className="flex-1 font-mono text-[11px] text-orange-300/80 truncate">{fullCommand}</code>
+              </div>
+            )}
+
+            {/* Debug section */}
+            {parsedPlayers && parsedPlayers.length > 0 && (
+              <div className="mt-2">
+                <button
+                  onClick={() => setShowDebug((v) => !v)}
+                  className="text-[10px] text-white/20 hover:text-white/40 transition-colors"
+                >
+                  {showDebug ? "▲ Debug" : "▼ Debug"}
+                </button>
+                {showDebug && (() => {
+                  const dbg = buildVoiceDebugInfo(parsedPlayers, voiceMode, playersToHear ?? null);
+                  return (
+                    <pre className="mt-1 text-[9px] text-white/45 bg-black/50 p-2 rounded-lg overflow-x-auto leading-relaxed">
+                      {JSON.stringify({ voiceMode, spieler: dbg.players, bitmask: dbg.bitmask }, null, 2)}
+                    </pre>
+                  );
+                })()}
               </div>
             )}
           </div>
@@ -520,20 +530,6 @@ export function MatchCard({ match }: MatchCardProps) {
               >
                 {cmdCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                 {cmdCopied ? "Kopiert!" : "Befehl kopieren"}
-              </button>
-
-              {/* Voice toggle */}
-              <button
-                onClick={() => setShowVoicePicker((v) => !v)}
-                className={cn(
-                  "p-2 rounded-lg border text-xs transition-all",
-                  showVoicePicker
-                    ? "border-orange-500/50 bg-orange-500/10 text-orange-300"
-                    : "border-white/10 text-white/30 hover:text-white/60 hover:border-white/20"
-                )}
-                title="Voice-Modus wählen"
-              >
-                <Volume2 className="w-3.5 h-3.5" />
               </button>
 
               {/* Launch in CS2 (Tauri only) */}
