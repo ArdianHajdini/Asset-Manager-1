@@ -231,7 +231,9 @@ export function buildVoiceCommands(
       const known = playersWithEntityIds(playersToHear);
       if (known.length === 0) return null;
       const { low, high } = buildVoiceIndexBitmask(known);
-      return `tv_listen_voice_indices ${low}; tv_listen_voice_indices_h ${high}`;
+      // voice_enable 1 must be set explicitly — a prior "Kein Voice" mode
+      // sets voice_enable 0 and without resetting it the bitmask has no effect.
+      return `voice_enable 1; tv_listen_voice_indices ${low}; tv_listen_voice_indices_h ${high}`;
     }
   }
 }
