@@ -209,7 +209,11 @@ export function MatchCard({ match }: MatchCardProps) {
   // ── Copy command ─────────────────────────────────────────────────────────
   async function handleCopyCommand() {
     if (!fullCommand) {
-      setStatus({ type: "error", message: "Demo wurde noch nicht verarbeitet — bitte zuerst herunterladen." });
+      // Distinguish: demo not yet downloaded vs. voice filter unavailable
+      const msg = playdemoArg
+        ? "Sprachfilter für diesen Modus nicht verfügbar — Demo-Daten fehlen."
+        : "Demo wurde noch nicht verarbeitet — bitte zuerst herunterladen.";
+      setStatus({ type: "error", message: msg });
       return;
     }
     const copied = await copyToClipboard(fullCommand);
@@ -492,8 +496,10 @@ export function MatchCard({ match }: MatchCardProps) {
               {/* Copy command — primary */}
               <button
                 onClick={handleCopyCommand}
+                disabled={!fullCommand && !!playdemoArg && (voiceMode === "own_team" || voiceMode === "enemy")}
+                title={!fullCommand && playdemoArg ? "Sprachfilter nicht verfügbar — Demo-Daten fehlen" : undefined}
                 className={cn(
-                  "flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all",
+                  "flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed",
                   cmdCopied
                     ? "bg-green-600 text-white"
                     : "bg-white/8 hover:bg-white/15 border border-white/12 text-white/80 hover:text-white"
