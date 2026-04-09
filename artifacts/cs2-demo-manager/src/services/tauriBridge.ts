@@ -183,6 +183,35 @@ export async function tauriParseDemoPlayers(filepath: string): Promise<TauriDemo
   return invoke<TauriDemoPlayer[]>("parse_demo_players", { filepath });
 }
 
+// ─────────────────────────────────────────
+//  OAuth helpers
+// ─────────────────────────────────────────
+
+/**
+ * Open a URL in the system browser (not inside the Tauri webview).
+ * Used to launch the FACEIT OAuth authorization page so the user's browser
+ * session is available and FACEIT can redirect back to the local callback server.
+ */
+export async function tauriOpenUrlExternally(url: string): Promise<void> {
+  const invoke = await getInvoke();
+  return invoke("open_url_externally", { url });
+}
+
+/**
+ * Start a local TCP listener on 127.0.0.1 with a random free port.
+ * Returns the port number.
+ *
+ * The Rust listener accepts one HTTP request (the OAuth redirect), parses
+ * the `code` and `state` query params, sends a close page to the browser,
+ * and emits the `faceit-oauth-callback` Tauri event.
+ *
+ * Listen for the result with `listen("faceit-oauth-callback", ...)`.
+ */
+export async function tauriStartOAuthListener(): Promise<number> {
+  const invoke = await getInvoke();
+  return invoke<number>("start_oauth_listener");
+}
+
 /**
  * Convert a TauriDemoEntry to the app's Demo type (adds a placeholder id).
  * The actual id is assigned by the frontend storage layer.

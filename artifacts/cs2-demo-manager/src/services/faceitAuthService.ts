@@ -16,7 +16,8 @@
  * Connection state is persisted to localStorage.
  */
 
-import type { FaceitConnection, FaceitAuthMethod } from "../types/faceit";
+import type { FaceitConnection } from "../types/faceit";
+import { isTauri, tauriOpenUrlExternally, tauriStartOAuthListener } from "./tauriBridge";
 
 // ─────────────────────────────────────────
 //  Constants
@@ -88,6 +89,7 @@ export function clearConnection(): void {
   localStorage.removeItem(STORAGE_KEY);
   sessionStorage.removeItem("faceit_pkce_verifier");
   sessionStorage.removeItem("faceit_pkce_state");
+  sessionStorage.removeItem("faceit_redirect_uri");
 }
 
 // ─────────────────────────────────────────
@@ -137,12 +139,20 @@ export async function connectWithApiKey(
 
 /**
  * Start the OAuth2 PKCE flow.
- * Redirects the browser to the FACEIT authorization page.
+ *
+ * Tauri (desktop):
+ *   - Starts a local TCP listener on 127.0.0.1 with a random port (RFC 8252 §7.3)
+ *   - Opens the FACEIT auth page in the system browser
+ *   - Returns a Promise<FaceitConnection> that resolves when the callback fires
+ *
+ * Browser (dev/preview):
+ *   - Redirects window.location.href to the FACEIT auth page
+ *   - Returns a Promise that never resolves (page navigates away)
+ *   - FaceitCallbackPage handles the return redirect
  *
  * ⚠️  Requires VITE_FACEIT_CLIENT_ID to be set.
- *     Without it, this function throws immediately.
  */
-export async function startOAuthFlow(): Promise<void> {
+export async function startOAuthFlow(): Promise<FaceitConnection> {
   if (!FACEIT_CLIENT_ID) {
     throw new Error(
       "FACEIT OAuth ist nicht konfiguriert. Bitte trage die CLIENT_ID ein (VITE_FACEIT_CLIENT_ID). " +
@@ -152,11 +162,70 @@ export async function startOAuthFlow(): Promise<void> {
 
   const verifier = generateCodeVerifier();
   const challenge = await generateCodeChallenge(verifier);
-  const state = generateCodeVerifier().slice(0, 16);
+  const state = generateCodeVerifier().slice(0, 24);
 
   sessionStorage.setItem("faceit_pkce_verifier", verifier);
   sessionStorage.setItem("faceit_pkce_state", state);
 
+  if (isTauri()) {
+    // ── Tauri: loopback redirect (RFC 8252 §7.3) ────────────────────────────
+    // Start local server → open system browser → wait for callback event
+    const port = await tauriStartOAuthListener();
+    const redirectUri = `http://127.0.0.1:${port}/callback`;
+    sessionStorage.setItem("faceit_redirect_uri", redirectUri);
+
+    const params = new URLSearchParams({
+      response_type: "code",
+      client_id: FACEIT_CLIENT_ID,
+      redirect_uri: redirectUri,
+      scope: "openid profile membership",
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state,
+    });
+
+    await tauriOpenUrlExternally(`${FACEIT_OAUTH_BASE}/oauth/authorize?${params}`);
+
+    // Return a Promise that resolves once Rust emits faceit-oauth-callback
+    return new Promise<FaceitConnection>((resolve, reject) => {
+      let unlisten: (() => void) | null = null;
+
+      const timeoutId = setTimeout(() => {
+        unlisten?.();
+        reject(new Error("OAuth-Timeout: Der Login wurde nicht innerhalb von 5 Minuten abgeschlossen."));
+      }, 5 * 60 * 1000);
+
+      import("@tauri-apps/api/event")
+        .then(({ listen }) =>
+          listen<{ code: string; state: string; error: string }>(
+            "faceit-oauth-callback",
+            async (event) => {
+              clearTimeout(timeoutId);
+              unlisten?.();
+              const { code, state: cbState, error } = event.payload;
+              if (error) {
+                reject(new Error(`FACEIT hat den Zugriff verweigert: ${error}`));
+                return;
+              }
+              if (!code) {
+                reject(new Error("Kein Autorisierungscode empfangen."));
+                return;
+              }
+              try {
+                resolve(await completeOAuthFlow(code, cbState, redirectUri));
+              } catch (e) {
+                reject(e);
+              }
+            }
+          )
+        )
+        .then((fn) => { unlisten = fn; })
+        .catch(reject);
+    });
+  }
+
+  // ── Browser: classic redirect flow ─────────────────────────────────────────
+  // FaceitCallbackPage handles the return; this Promise never resolves.
   const params = new URLSearchParams({
     response_type: "code",
     client_id: FACEIT_CLIENT_ID,
@@ -168,24 +237,32 @@ export async function startOAuthFlow(): Promise<void> {
   });
 
   window.location.href = `${FACEIT_OAUTH_BASE}/oauth/authorize?${params}`;
+  return new Promise<FaceitConnection>(() => {});
 }
 
 /**
- * Complete the OAuth2 PKCE flow after redirect.
- * Call this on the /faceit/callback route.
+ * Complete the OAuth2 PKCE flow after receiving the authorization code.
  *
- * ⚠️  Token exchange requires a CLIENT_SECRET on the server side
- *     (public clients using PKCE should NOT expose this).
- *     For a pure SPA, the FACEIT OAuth server must support public clients.
- *     See faceit-integration-plan.md for details.
+ * In Tauri: called internally by startOAuthFlow() with the loopback redirectUri.
+ * In browser: called by FaceitCallbackPage after the redirect returns.
+ *
+ * @param code        - The authorization code from FACEIT
+ * @param state       - The state parameter (must match saved state)
+ * @param redirectUri - The redirect_uri used in the authorization request.
+ *                      Falls back to sessionStorage / getOAuthRedirectUri() when omitted.
  */
-export async function completeOAuthFlow(code: string, state: string): Promise<FaceitConnection> {
+export async function completeOAuthFlow(
+  code: string,
+  state: string,
+  redirectUri?: string
+): Promise<FaceitConnection> {
   if (!FACEIT_CLIENT_ID) {
     throw new Error("FACEIT CLIENT_ID nicht konfiguriert.");
   }
 
   const savedState = sessionStorage.getItem("faceit_pkce_state");
-  if (savedState !== state) {
+  // Allow when savedState is null (e.g. page was refreshed mid-flow)
+  if (savedState && savedState !== state) {
     throw new Error("OAuth-Sicherheitsfehler: State stimmt nicht überein.");
   }
 
@@ -194,10 +271,15 @@ export async function completeOAuthFlow(code: string, state: string): Promise<Fa
     throw new Error("OAuth-Fehler: Code-Verifier nicht gefunden. Bitte neu einloggen.");
   }
 
+  const effectiveRedirectUri =
+    redirectUri ??
+    sessionStorage.getItem("faceit_redirect_uri") ??
+    getOAuthRedirectUri();
+
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code,
-    redirect_uri: getOAuthRedirectUri(),
+    redirect_uri: effectiveRedirectUri,
     client_id: FACEIT_CLIENT_ID,
     code_verifier: verifier,
   });
@@ -255,6 +337,7 @@ export async function completeOAuthFlow(code: string, state: string): Promise<Fa
   saveConnection(conn);
   sessionStorage.removeItem("faceit_pkce_verifier");
   sessionStorage.removeItem("faceit_pkce_state");
+  sessionStorage.removeItem("faceit_redirect_uri");
   return conn;
 }
 

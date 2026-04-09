@@ -1466,6 +1466,174 @@ pub mod commands {
                 .ok_or_else(|| "Fehler beim Lesen der Demo.".to_string())
         }
     }
+
+    // ── Command — OAuth: open URL in system browser ───────────────
+    //
+    // Opens `url` in the user's default browser without loading it in the
+    // Tauri webview. This is required for the FACEIT OAuth flow so that the
+    // user's browser session / cookies are preserved and the OS can properly
+    // handle the redirect back to the local callback server.
+
+    #[tauri::command]
+    pub fn open_url_externally(url: String) -> Result<(), String> {
+        #[cfg(target_os = "windows")]
+        {
+            // `start "" <url>` — empty string is the window title (required)
+            Command::new("cmd")
+                .args(["/c", "start", "", url.as_str()])
+                .spawn()
+                .map_err(|e| format!("Browser konnte nicht geöffnet werden: {}", e))?;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Command::new("open")
+                .arg(&url)
+                .spawn()
+                .map_err(|e| format!("Browser konnte nicht geöffnet werden: {}", e))?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Command::new("xdg-open")
+                .arg(&url)
+                .spawn()
+                .map_err(|e| format!("Browser konnte nicht geöffnet werden: {}", e))?;
+        }
+        Ok(())
+    }
+
+    // ── Command — OAuth: local loopback callback server ───────────
+    //
+    // Binds a TCP listener on 127.0.0.1 with a random free port and returns
+    // the port immediately. A background task waits for the OAuth redirect
+    // from the system browser, parses the `code` and `state` query params,
+    // sends a friendly HTML close-page to the browser, and emits a Tauri
+    // event `faceit-oauth-callback` so the frontend can complete the flow.
+    //
+    // RFC 8252 §7.3 defines the loopback redirect as the recommended approach
+    // for native apps. Most OAuth providers (including FACEIT) accept
+    // http://127.0.0.1 with any port as a valid redirect URI.
+
+    #[tauri::command]
+    pub async fn start_oauth_listener(app: tauri::AppHandle) -> Result<u16, String> {
+        use tauri::Emitter;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("Konnte keinen freien Port binden: {}", e))?;
+
+        let port = listener
+            .local_addr()
+            .map_err(|e| format!("Port konnte nicht ermittelt werden: {}", e))?
+            .port();
+
+        tokio::spawn(async move {
+            // Accept exactly one connection — the browser redirect
+            let payload = match listener.accept().await {
+                Err(e) => {
+                    serde_json::json!({ "code": "", "state": "", "error": e.to_string() })
+                }
+                Ok((mut stream, _)) => {
+                    let mut buf = vec![0u8; 8192];
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..n]);
+
+                    // Parse: GET /callback?code=...&state=... HTTP/1.1
+                    let query_str = request
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .and_then(|path| path.split_once('?').map(|(_, q)| q.to_string()))
+                        .unwrap_or_default();
+
+                    let mut code = String::new();
+                    let mut state = String::new();
+                    let mut error = String::new();
+
+                    for pair in query_str.split('&') {
+                        if let Some((k, v)) = pair.split_once('=') {
+                            let decoded = oauth_percent_decode(v);
+                            match k {
+                                "code" => code = decoded,
+                                "state" => state = decoded,
+                                "error" => error = decoded,
+                                "error_description" if error.is_empty() => error = decoded,
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    let success = error.is_empty() && !code.is_empty();
+                    let body = if success {
+                        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>CS2 Demo Manager</title>\
+                        <style>body{font-family:sans-serif;background:#0d1117;color:#ccc;display:flex;\
+                        align-items:center;justify-content:center;min-height:100vh;margin:0}\
+                        .box{text-align:center}</style></head><body>\
+                        <div class='box'>\
+                        <div style='font-size:3rem'>✓</div>\
+                        <div style='color:#FF5500;font-size:1.4rem;margin:.5rem 0'>Erfolgreich angemeldet!</div>\
+                        <div style='color:#888;font-size:.9rem'>Du kannst dieses Fenster jetzt schließen.</div>\
+                        </div><script>setTimeout(()=>window.close(),2000)</script></body></html>"
+                    } else {
+                        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>CS2 Demo Manager</title>\
+                        <style>body{font-family:sans-serif;background:#0d1117;color:#ccc;display:flex;\
+                        align-items:center;justify-content:center;min-height:100vh;margin:0}\
+                        .box{text-align:center}</style></head><body>\
+                        <div class='box'>\
+                        <div style='font-size:3rem'>✗</div>\
+                        <div style='color:#e55;font-size:1.4rem;margin:.5rem 0'>Anmeldung fehlgeschlagen</div>\
+                        <div style='color:#888;font-size:.9rem'>Bitte schließe dieses Fenster und versuche es erneut.</div>\
+                        </div></body></html>"
+                    };
+
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\n\
+                         Content-Type: text/html; charset=utf-8\r\n\
+                         Content-Length: {}\r\n\
+                         Connection: close\r\n\
+                         \r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.flush().await;
+
+                    serde_json::json!({ "code": code, "state": state, "error": error })
+                }
+            };
+
+            let _ = app.emit("faceit-oauth-callback", payload);
+        });
+
+        Ok(port)
+    }
+
+    /// Minimal percent-decoder: handles `%XX` sequences and `+` → space.
+    fn oauth_percent_decode(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let bytes = s.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                if let (Some(hi), Some(lo)) = (
+                    (bytes[i + 1] as char).to_digit(16),
+                    (bytes[i + 2] as char).to_digit(16),
+                ) {
+                    out.push((((hi << 4) | lo) as u8) as char);
+                    i += 3;
+                    continue;
+                }
+            } else if bytes[i] == b'+' {
+                out.push(' ');
+                i += 1;
+                continue;
+            }
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+        out
+    }
 }
 
 // ─────────────────────────────────────────
@@ -1492,6 +1660,8 @@ pub fn run() {
             commands::scan_downloads,
             commands::detect_downloads_folder,
             commands::parse_demo_players,
+            commands::open_url_externally,
+            commands::start_oauth_listener,
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten der Anwendung");
