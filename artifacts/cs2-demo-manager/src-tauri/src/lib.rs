@@ -1501,115 +1501,82 @@ pub mod commands {
         Ok(())
     }
 
-    // ── Command — OAuth: local loopback callback server ───────────
+    // ── Command — OAuth: Tauri WebviewWindow flow ─────────────────
     //
-    // Binds a TCP listener on 127.0.0.1:14523 (fixed port) and returns
-    // the port immediately. A background task waits for the OAuth redirect
-    // from the system browser, parses the `code` and `state` query params,
-    // sends a friendly HTML close-page to the browser, and emits a Tauri
-    // event `faceit-oauth-callback` so the frontend can complete the flow.
+    // Opens FACEIT's OAuth authorization page in an embedded Tauri window.
+    // A navigation handler intercepts any redirect to
+    // https://127.0.0.1:14523/callback BEFORE the webview tries to load it
+    // (no actual server is needed on that port). The code and state query
+    // params are extracted, a `faceit-oauth-callback` Tauri event is emitted
+    // to the main window, and the OAuth window is closed automatically.
     //
-    // This avoids the need for a custom URI scheme (deep links) while still
-    // handling the callback outside the Tauri webview. RFC 8252 §7.3 defines
-    // this as the recommended approach for native apps.
+    // The redirect URI registered in the FACEIT developer portal must be:
+    //   https://127.0.0.1:14523/callback
 
     #[tauri::command]
-    pub async fn start_oauth_listener(app: tauri::AppHandle) -> Result<u16, String> {
-        use tauri::Emitter;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpListener;
+    pub fn open_oauth_webview(app: tauri::AppHandle, auth_url: String) -> Result<(), String> {
+        use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};
 
-        // Fixed port so the redirect URI is predictable and can be registered
-        // in the FACEIT developer portal as http://127.0.0.1:14523/callback
-        let listener = TcpListener::bind("127.0.0.1:14523")
-            .await
-            .map_err(|e| format!("OAuth-Port 14523 konnte nicht gebunden werden: {}", e))?;
+        const REDIRECT_PREFIX: &str = "https://127.0.0.1:14523/callback";
 
-        let port = listener
-            .local_addr()
-            .map_err(|e| format!("Port konnte nicht ermittelt werden: {}", e))?
-            .port();
+        let parsed = auth_url
+            .parse::<url::Url>()
+            .map_err(|e| format!("[CS2DM] Ungültige Auth-URL: {}", e))?;
 
-        tokio::spawn(async move {
-            // Accept exactly one connection (the browser redirect)
-            let payload = match listener.accept().await {
-                Err(e) => serde_json::json!({ "code": "", "state": "", "error": e.to_string() }),
-                Ok((mut stream, _)) => {
-                    // Read the HTTP request
-                    let mut buf = vec![0u8; 8192];
-                    let n = stream.read(&mut buf).await.unwrap_or(0);
-                    let request = String::from_utf8_lossy(&buf[..n]);
+        let window = WebviewWindowBuilder::new(
+            &app,
+            "faceit-oauth",
+            WebviewUrl::External(parsed),
+        )
+        .title("FACEIT Anmelden — CS2 Demo Manager")
+        .inner_size(520.0, 720.0)
+        .resizable(true)
+        .center()
+        .build()
+        .map_err(|e| format!("[CS2DM] OAuth-Fenster konnte nicht geöffnet werden: {}", e))?;
 
-                    // First line: GET /callback?code=...&state=... HTTP/1.1
-                    let query_str = request
-                        .lines()
-                        .next()
-                        .and_then(|line| line.split_whitespace().nth(1))
-                        .and_then(|path| path.split_once('?').map(|(_, q)| q.to_string()))
-                        .unwrap_or_default();
+        let app_handle = app.clone();
+        let label = window.label().to_string();
 
-                    let mut code = String::new();
-                    let mut state = String::new();
-                    let mut error = String::new();
+        window.on_navigation(move |url| {
+            if !url.as_str().starts_with(REDIRECT_PREFIX) {
+                return true; // alle anderen Navigationen erlauben
+            }
 
-                    for pair in query_str.split('&') {
-                        if let Some((k, v)) = pair.split_once('=') {
-                            // Minimal percent-decode: replace %XX sequences
-                            let decoded = percent_decode(v);
-                            match k {
-                                "code" => code = decoded,
-                                "state" => state = decoded,
-                                "error" => error = decoded,
-                                "error_description" if error.is_empty() => error = decoded,
-                                _ => {}
-                            }
-                        }
+            let query = url.query().unwrap_or("");
+            let mut code = String::new();
+            let mut state = String::new();
+            let mut error = String::new();
+
+            for pair in query.split('&') {
+                if let Some((k, v)) = pair.split_once('=') {
+                    let decoded = percent_decode(v);
+                    match k {
+                        "code"  => code  = decoded,
+                        "state" => state = decoded,
+                        "error" => error = decoded,
+                        "error_description" if error.is_empty() => error = decoded,
+                        _ => {}
                     }
-
-                    // Reply to the browser so the tab shows a friendly message
-                    let success = error.is_empty() && !code.is_empty();
-                    let body = if success {
-                        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>CS2 Demo Manager</title>\
-                        <style>body{font-family:sans-serif;background:#0d1117;color:#ccc;display:flex;\
-                        align-items:center;justify-content:center;min-height:100vh;margin:0}\
-                        .box{text-align:center}.icon{font-size:3rem}.title{color:#FF5500;font-size:1.4rem;\
-                        margin:.5rem 0}.sub{color:#888;font-size:.9rem}</style></head><body>\
-                        <div class='box'><div class='icon'>✓</div>\
-                        <div class='title'>Erfolgreich angemeldet!</div>\
-                        <div class='sub'>Du kannst dieses Fenster jetzt schließen.</div></div>\
-                        <script>setTimeout(()=>window.close(),2000)</script></body></html>"
-                    } else {
-                        "<!DOCTYPE html><html><head><meta charset='utf-8'><title>CS2 Demo Manager</title>\
-                        <style>body{font-family:sans-serif;background:#0d1117;color:#ccc;display:flex;\
-                        align-items:center;justify-content:center;min-height:100vh;margin:0}\
-                        .box{text-align:center}.icon{font-size:3rem}.title{color:#e55;font-size:1.4rem;\
-                        margin:.5rem 0}.sub{color:#888;font-size:.9rem}</style></head><body>\
-                        <div class='box'><div class='icon'>✗</div>\
-                        <div class='title'>Anmeldung fehlgeschlagen</div>\
-                        <div class='sub'>Bitte schließe dieses Fenster und versuche es erneut.</div></div>\
-                        </body></html>"
-                    };
-
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\n\
-                         Content-Type: text/html; charset=utf-8\r\n\
-                         Content-Length: {}\r\n\
-                         Connection: close\r\n\
-                         \r\n{}",
-                        body.len(),
-                        body
-                    );
-                    let _ = stream.write_all(response.as_bytes()).await;
-                    let _ = stream.flush().await;
-
-                    serde_json::json!({ "code": code, "state": state, "error": error })
                 }
-            };
+            }
 
-            let _ = app.emit("faceit-oauth-callback", payload);
+            let payload = serde_json::json!({
+                "code":  code,
+                "state": state,
+                "error": error,
+            });
+
+            let _ = app_handle.emit("faceit-oauth-callback", payload);
+
+            if let Some(win) = app_handle.get_webview_window(&label) {
+                let _ = win.close();
+            }
+
+            false // Navigation blockieren — kein echter Server auf Port 14523
         });
 
-        Ok(port)
+        Ok(())
     }
 
     /// Minimal percent-decoder: replaces `%XX` sequences and `+` → space.
@@ -1664,7 +1631,7 @@ pub fn run() {
             commands::detect_downloads_folder,
             commands::parse_demo_players,
             commands::open_url_externally,
-            commands::start_oauth_listener,
+            commands::open_oauth_webview,
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten der Anwendung");
