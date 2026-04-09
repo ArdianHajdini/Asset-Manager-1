@@ -160,22 +160,38 @@ export function hasEntityIds(players: TauriDemoPlayer[]): boolean {
 }
 
 /**
- * Compute the tv_listen_voice_indices bitmask for the given players.
+ * Compute the tv_listen_voice_indices bitmask split for the given players.
  * Only players with a known entityId contribute to the bitmask.
  * Bit N is set when the player at slot N should be heard.
- * Example: slots [2, 5, 7] → (1<<2)|(1<<5)|(1<<7) = 164
+ * Example: slots [2, 5, 7] → low=(1<<2)|(1<<5)|(1<<7)=164, high=0
  *
- * JS bitwise operators are 32-bit signed; slots > 30 would overflow.
- * CS2 demos have at most 10 players per side (slots 0–9) so this guard
- * is purely defensive.
+ * CS2 uses two signed-32-bit console cvars:
+ *   tv_listen_voice_indices   — bits for slots 0–31
+ *   tv_listen_voice_indices_h — bits for slots 32–63 (always 0 in CS2)
+ *
+ * JS bitwise operators produce signed 32-bit values, which is exactly what
+ * CS2 expects. Slot 31 → (1<<31) = -2147483648 as a JS number, which is the
+ * correct signed representation for CS2.
+ *
+ * CS2 demos have at most 10 players per side (slots 0–9); the high word is
+ * always 0 in practice but is computed correctly for defensive correctness.
  */
-export function buildVoiceIndexBitmask(players: TauriDemoPlayer[]): number {
-  return players.reduce((acc, p) => {
-    if (p.entityId === undefined) return acc;
+export function buildVoiceIndexBitmask(players: TauriDemoPlayer[]): {
+  low: number;
+  high: number;
+} {
+  let low = 0;
+  let high = 0;
+  for (const p of players) {
+    if (p.entityId === undefined) continue;
     const slot = p.entityId as number;
-    if (slot > 30) return acc;
-    return acc | (1 << slot);
-  }, 0);
+    if (slot >= 0 && slot < 32) {
+      low = low | (1 << slot);
+    } else if (slot >= 32 && slot < 64) {
+      high = high | (1 << (slot - 32));
+    }
+  }
+  return { low, high };
 }
 
 // ── Command builder ─────────────────────────────────────────────────────────
@@ -207,8 +223,8 @@ export function buildVoiceCommands(
       if (!playersToHear) return null;
       const known = playersWithEntityIds(playersToHear);
       if (known.length === 0) return null;
-      const bitmask = buildVoiceIndexBitmask(known);
-      return `tv_listen_voice_indices ${bitmask}; tv_listen_voice_indices_h 0`;
+      const { low, high } = buildVoiceIndexBitmask(known);
+      return `tv_listen_voice_indices ${low}; tv_listen_voice_indices_h ${high}`;
     }
   }
 }
