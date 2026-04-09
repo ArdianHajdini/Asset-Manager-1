@@ -1515,15 +1515,17 @@ pub mod commands {
 
     #[tauri::command]
     pub fn open_oauth_webview(app: tauri::AppHandle, auth_url: String) -> Result<(), String> {
-        use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};
+        use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
         const REDIRECT_PREFIX: &str = "https://127.0.0.1:14523/callback";
 
         let parsed = auth_url
-            .parse::<url::Url>()
+            .parse::<tauri::Url>()
             .map_err(|e| format!("[CS2DM] Ungültige Auth-URL: {}", e))?;
 
-        let window = WebviewWindowBuilder::new(
+        let app_for_nav = app.clone();
+
+        WebviewWindowBuilder::new(
             &app,
             "faceit-oauth",
             WebviewUrl::External(parsed),
@@ -1532,13 +1534,7 @@ pub mod commands {
         .inner_size(520.0, 720.0)
         .resizable(true)
         .center()
-        .build()
-        .map_err(|e| format!("[CS2DM] OAuth-Fenster konnte nicht geöffnet werden: {}", e))?;
-
-        let app_handle = app.clone();
-        let label = window.label().to_string();
-
-        window.on_navigation(move |url| {
+        .on_navigation(move |url| {
             if !url.as_str().starts_with(REDIRECT_PREFIX) {
                 return true; // alle anderen Navigationen erlauben
             }
@@ -1567,14 +1563,17 @@ pub mod commands {
                 "error": error,
             });
 
-            let _ = app_handle.emit("faceit-oauth-callback", payload);
+            let _ = app_for_nav.emit("faceit-oauth-callback", payload);
 
-            if let Some(win) = app_handle.get_webview_window(&label) {
+            // Fenster schließen — Manager-Trait gibt get_webview_window()
+            if let Some(win) = app_for_nav.get_webview_window("faceit-oauth") {
                 let _ = win.close();
             }
 
             false // Navigation blockieren — kein echter Server auf Port 14523
-        });
+        })
+        .build()
+        .map_err(|e| format!("[CS2DM] OAuth-Fenster konnte nicht geöffnet werden: {}", e))?;
 
         Ok(())
     }
