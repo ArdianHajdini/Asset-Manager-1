@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Download, Play, FolderOpen, Loader2, CheckCircle2, AlertCircle,
-  Calendar, Map, Trophy, Copy, Check, Users, Volume2,
+  Calendar, Map, Trophy, Copy, Check, Users, Volume2, Info,
 } from "lucide-react";
 import type { FaceitHistoryItem } from "../types/faceit";
 import { useFaceit } from "../context/FaceitContext";
@@ -22,8 +22,17 @@ import {
   type VoiceMode,
   VOICE_OPTIONS,
   buildFullPlayCommand,
+  buildRosters,
+  getPlayersForMode,
+  getPlayersToHear,
+  hasEntityIds,
+  type DemoRosters,
 } from "../services/voiceService";
-import { isTauri } from "../services/tauriBridge";
+import {
+  isTauri,
+  tauriParseDemoPlayers,
+  type TauriDemoPlayer,
+} from "../services/tauriBridge";
 import { useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 
@@ -47,6 +56,22 @@ export function MatchCard({ match }: MatchCardProps) {
   const [cmdCopied, setCmdCopied] = useState(false);
   const [launching, setLaunching] = useState(false);
 
+  // Demo player parser (entity IDs for tv_listen_voice_indices)
+  const [parsedPlayers, setParsedPlayers] = useState<TauriDemoPlayer[] | null>(null);
+  const [parsing, setParsing] = useState(false);
+
+  // Auto-parse on mount if this demo was already downloaded in a previous session
+  useEffect(() => {
+    if (!isTauri()) return;
+    const existingDemo = findDownloadedDemo(match.match_id);
+    if (!existingDemo?.filepath || parsedPlayers !== null || parsing) return;
+    setParsing(true);
+    tauriParseDemoPlayers(existingDemo.filepath)
+      .then((players) => setParsedPlayers(players))
+      .catch(() => setParsedPlayers([]))
+      .finally(() => setParsing(false));
+  }, [match.match_id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!connection) return null;
 
   const playerId = connection.playerId;
@@ -60,15 +85,32 @@ export function MatchCard({ match }: MatchCardProps) {
   const existingDemo = findDownloadedDemo(match.match_id);
   const isAlreadyDownloaded = dlState.status === "done" || existingDemo !== null;
 
-  // Build playdemo command from downloaded demo file
+  // Build playdemo arg from downloaded demo file
   const downloadedDemo = existingDemo;
   const playdemoArg = downloadedDemo
     ? buildPlaydemoArg(downloadedDemo.filename)
     : dlState.demoPath
       ? buildPlaydemoArg(dlState.demoPath.split(/[\\/]/).pop() ?? "")
       : null;
+
+  // Computed rosters from parsed .dem players
+  const rosters: DemoRosters | null = parsedPlayers ? buildRosters(parsedPlayers) : null;
+  const userXuid = settings.steamId || undefined;
+
+  // Players displayed in the voice-mode player list
+  const playersForMode = getPlayersForMode(voiceMode, rosters, userXuid);
+
+  // Players to HEAR (their entityIds drive tv_listen_voice_indices)
+  const playersToHear = getPlayersToHear(voiceMode, rosters, userXuid);
+
+  // True when tv_listen_voice_indices can be generated
+  const autoMuteAvailable =
+    (voiceMode === "own_team" || voiceMode === "enemy") &&
+    playersToHear !== null &&
+    hasEntityIds(playersToHear);
+
   const fullCommand = playdemoArg
-    ? buildFullPlayCommand(playdemoArg, voiceMode)
+    ? buildFullPlayCommand(playdemoArg, voiceMode, playersToHear)
     : null;
 
   // ── Lazy-load demo details (map, availability) ───────────────────────────
@@ -142,6 +184,15 @@ export function MatchCard({ match }: MatchCardProps) {
           type: "success",
           message: `Demo „${displayName}" wurde im Replay-Ordner gespeichert.`,
         });
+
+        // Parse entity IDs from the freshly downloaded .dem file
+        if (isTauri() && demo.filepath) {
+          setParsing(true);
+          tauriParseDemoPlayers(demo.filepath)
+            .then((players) => setParsedPlayers(players))
+            .catch(() => setParsedPlayers([]))
+            .finally(() => setParsing(false));
+        }
       } else {
         setDownloadState(match.match_id, { status: "done" });
         setStatus({
@@ -174,7 +225,6 @@ export function MatchCard({ match }: MatchCardProps) {
     if (!downloadedDemo) return;
 
     if (!isTauri()) {
-      // Browser: just copy the command
       await handleCopyCommand();
       setStatus({
         type: "info",
@@ -204,6 +254,18 @@ export function MatchCard({ match }: MatchCardProps) {
     } finally {
       setLaunching(false);
     }
+  }
+
+  // ── Team label / color helpers ────────────────────────────────────────────
+  function teamLabel(teamNum: number): string {
+    if (teamNum === 2) return "T";
+    if (teamNum === 3) return "CT";
+    return "?";
+  }
+  function teamColor(teamNum: number): string {
+    if (teamNum === 2) return "text-yellow-400/80";
+    if (teamNum === 3) return "text-blue-400/80";
+    return "text-white/30";
   }
 
   // ── Styling based on result ───────────────────────────────────────────────
@@ -298,6 +360,19 @@ export function MatchCard({ match }: MatchCardProps) {
               Heruntergeladen
             </span>
           )}
+          {/* Parsing status */}
+          {isAlreadyDownloaded && isTauri() && parsing && (
+            <span className="flex items-center gap-1 text-xs text-white/30">
+              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              Analysiere Demo...
+            </span>
+          )}
+          {isAlreadyDownloaded && isTauri() && !parsing && parsedPlayers && parsedPlayers.length > 0 && (
+            <span className="flex items-center gap-1 text-xs text-white/30">
+              <Users className="w-2.5 h-2.5" />
+              {parsedPlayers.length} Spieler erkannt
+            </span>
+          )}
         </div>
 
         {/* Download error */}
@@ -314,48 +389,91 @@ export function MatchCard({ match }: MatchCardProps) {
             <p className="text-white/40 text-xs mb-2 flex items-center gap-1.5">
               <Volume2 className="w-3 h-3" />
               Voice-Modus
+              {parsing && <Loader2 className="w-2.5 h-2.5 animate-spin text-white/20" />}
             </p>
             <div className="grid grid-cols-4 gap-1">
               {VOICE_OPTIONS.map((opt) => {
-                const hasFaceitRoster =
-                  opt.mode === "own_team" || opt.mode === "enemy";
+                const needsRoster = opt.mode === "own_team" || opt.mode === "enemy";
+                const hasRoster = needsRoster && rosters !== null;
+                const isSelected = voiceMode === opt.mode;
+                const dotStatus = !needsRoster
+                  ? "ok"
+                  : autoMuteAvailable && isSelected
+                    ? "auto"
+                    : hasRoster
+                      ? "list"
+                      : "none";
                 return (
                   <button
                     key={opt.mode}
                     onClick={() => setVoiceMode(opt.mode)}
-                    title={hasFaceitRoster
-                      ? `${opt.description} — FACEIT-Spielerliste verfügbar`
-                      : opt.description}
+                    title={opt.description}
                     className={cn(
                       "relative px-2 py-1.5 rounded-lg border text-xs font-medium transition-all",
-                      voiceMode === opt.mode
+                      isSelected
                         ? "border-orange-500/60 bg-orange-500/15 text-orange-300"
                         : "border-white/8 bg-white/3 text-white/40 hover:text-white/60"
                     )}
                   >
                     {opt.label}
-                    {hasFaceitRoster && (
-                      <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-green-500/80" title="FACEIT-Spielerliste verfügbar" />
+                    {dotStatus === "auto" && (
+                      <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-400" title="Automatische Stummschaltung aktiv" />
+                    )}
+                    {dotStatus === "list" && (
+                      <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-700/80" title="Spielerliste verfügbar" />
+                    )}
+                    {dotStatus === "none" && needsRoster && (
+                      <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-white/20" title="Demo noch nicht analysiert" />
                     )}
                   </button>
                 );
               })}
             </div>
 
-            {/* Player list for own_team / enemy */}
+            {/* Auto-mute status banner */}
+            {(voiceMode === "own_team" || voiceMode === "enemy") && (
+              <div className={cn(
+                "mt-2 px-2.5 py-1.5 rounded-lg border text-[10px] flex items-center gap-1.5",
+                autoMuteAvailable
+                  ? "bg-green-900/20 border-green-700/30 text-green-300/80"
+                  : "bg-black/20 border-white/6 text-white/30"
+              )}>
+                <Info className="w-3 h-3 shrink-0" />
+                {autoMuteAvailable
+                  ? `${playersToHear?.length ?? 0} Spieler werden automatisch gehört (Gegenseite stumm) — Befehl unten kopieren.`
+                  : rosters
+                    ? "Spieler-IDs nicht gefunden — Stummschaltung manuell über das CS2-Scoreboard."
+                    : "Demo wird noch analysiert…"}
+              </div>
+            )}
+
+            {/* Player list for own_team / enemy — prefer parsed data, fall back to FACEIT roster */}
             {(voiceMode === "own_team" || voiceMode === "enemy") && (
               <div className="mt-2 p-2 rounded-lg bg-black/25 border border-white/5">
                 <p className="text-white/30 text-[10px] font-semibold mb-1 uppercase tracking-wider">
                   {voiceMode === "own_team" ? "Eigenes Team" : "Gegner"}
                 </p>
-                <div className="flex flex-wrap gap-x-2 gap-y-0.5">
-                  {(voiceMode === "own_team" ? ownTeam : opponent).players.map((p) => (
-                    <span key={p.nickname} className="text-white/55 text-[11px]">{p.nickname}</span>
-                  ))}
-                </div>
-                <p className="text-white/20 text-[9px] mt-1.5">
-                  Tipp: Spieler manuell in CS2 über die Scoreboard-Stummschaltung deaktivieren.
-                </p>
+                {playersForMode && playersForMode.length > 0 ? (
+                  /* Parsed roster with slot numbers */
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                    {playersForMode.map((p) => (
+                      <span key={p.xuid} className="flex items-center gap-1 text-[10px]">
+                        <span className={cn("font-mono text-[9px] font-bold", teamColor(p.teamNum))}>{teamLabel(p.teamNum)}</span>
+                        <span className="text-white/50">{p.name}</span>
+                        {p.entityId !== undefined && (
+                          <span className="text-white/20 font-mono text-[8px]">#{p.entityId}</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  /* Fallback: FACEIT roster */
+                  <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+                    {(voiceMode === "own_team" ? ownTeam : opponent).players.map((p) => (
+                      <span key={p.nickname} className="text-white/55 text-[11px]">{p.nickname}</span>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
