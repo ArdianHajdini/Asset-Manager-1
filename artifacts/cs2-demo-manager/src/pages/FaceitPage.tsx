@@ -1,12 +1,12 @@
 import { useState } from "react";
 import {
-  RefreshCw, LogOut, Loader2, AlertCircle, User, Shield, Key,
+  RefreshCw, LogOut, Loader2, AlertCircle, User, Shield,
   Wifi, WifiOff, Info, Download, FolderSearch,
 } from "lucide-react";
 import { useFaceit } from "../context/FaceitContext";
 import { useApp } from "../context/AppContext";
 import { MatchCard } from "../components/MatchCard";
-import { connectWithApiKey, startOAuthFlow, FACEIT_CLIENT_ID } from "../services/faceitAuthService";
+import { startOAuthFlow, FACEIT_CLIENT_ID } from "../services/faceitAuthService";
 import { isTauri } from "../services/tauriBridge";
 import { scanDownloadsFolder, processCandidates } from "../services/downloadsService";
 import { cn } from "@/lib/utils";
@@ -15,12 +15,8 @@ export function FaceitPage() {
   const { connection, isConnected, matches, isLoadingMatches, matchError, refreshMatches, setConnection, disconnect } = useFaceit();
   const { settings, setStatus, refreshDemos, updateSettings } = useApp();
 
-  // Connection form state
-  const [nickname, setNickname] = useState("");
-  const [apiKey, setApiKey] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
-  const [showApiKeyForm, setShowApiKeyForm] = useState(false);
   const [scanning, setScanning] = useState(false);
 
   // ── Downloads-Ordner scannen ──────────────────────────────────────────────
@@ -60,33 +56,10 @@ export function FaceitPage() {
     }
   }
 
-  async function handleApiKeyConnect() {
-    if (!nickname.trim() || !apiKey.trim()) {
-      setConnectError("Bitte gib deinen Nickname und den API-Schlüssel ein.");
-      return;
-    }
-    setConnecting(true);
-    setConnectError(null);
-    try {
-      const conn = await connectWithApiKey(nickname.trim(), apiKey.trim());
-      setConnection(conn);
-      // Persist the Steam ID64 to settings so DemoCard can use it for team detection
-      if (conn.steamId) {
-        updateSettings({ steamId: conn.steamId });
-      }
-    } catch (err) {
-      setConnectError(String(err));
-    } finally {
-      setConnecting(false);
-    }
-  }
-
   async function handleOAuthConnect() {
     setConnecting(true);
     setConnectError(null);
     try {
-      // In Tauri: opens system browser and waits for the callback (~async)
-      // In browser: redirects the page — this code never returns
       const conn = await startOAuthFlow();
       setConnection(conn);
       if (conn.steamId) {
@@ -116,7 +89,7 @@ export function FaceitPage() {
           </p>
         </div>
 
-        {/* OAuth button (if CLIENT_ID is configured) */}
+        {/* OAuth button */}
         {FACEIT_CLIENT_ID ? (
           <>
             <button
@@ -129,15 +102,24 @@ export function FaceitPage() {
                 : <Shield className="w-4 h-4" />}
               {connecting
                 ? (isTauri() ? "Warte auf Browser…" : "Verbinde…")
-                : "Mit FACEIT anmelden (OAuth)"}
+                : "Mit FACEIT anmelden"}
             </button>
+
             {connecting && isTauri() && (
               <p className="text-white/35 text-xs text-center mb-3">
                 Der Browser wurde geöffnet — melde dich bei FACEIT an und kehre dann zur App zurück.
               </p>
             )}
+
+            {connectError && (
+              <div className="mb-3 flex items-start gap-2 p-3 rounded-lg bg-red-900/25 border border-red-700/35">
+                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                <p className="text-red-300/90 text-xs">{connectError}</p>
+              </div>
+            )}
+
             {!connecting && (
-              <div className="mb-3 flex items-start gap-2 p-3 rounded-xl border border-white/6 bg-white/2">
+              <div className="mt-2 flex items-start gap-2 p-3 rounded-xl border border-white/6 bg-white/2">
                 <Info className="w-3 h-3 text-white/25 shrink-0 mt-0.5" />
                 <p className="text-white/30 text-xs leading-relaxed">
                   Im FACEIT Developer Portal folgende Redirect URI eintragen:{" "}
@@ -152,93 +134,9 @@ export function FaceitPage() {
             <div>
               <p className="text-yellow-300 text-sm font-medium">OAuth nicht konfiguriert</p>
               <p className="text-yellow-200/55 text-xs mt-1">
-                Für den OAuth-Login wird eine FACEIT App CLIENT_ID benötigt.
-                Bitte verbinde dich stattdessen mit einem API-Schlüssel oder lies
-                die <code className="text-yellow-300">faceit-integration-plan.md</code> für Setup-Anweisungen.
+                Für den OAuth-Login wird eine FACEIT App CLIENT_ID benötigt (VITE_FACEIT_CLIENT_ID).
               </p>
             </div>
-          </div>
-        )}
-
-        {/* OAuth error (shown outside the API key form when OAuth fails) */}
-        {connectError && !showApiKeyForm && (
-          <div className="mb-3 flex items-start gap-2 p-3 rounded-lg bg-red-900/25 border border-red-700/35">
-            <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-            <p className="text-red-300/90 text-xs">{connectError}</p>
-          </div>
-        )}
-
-        {/* API Key form toggle */}
-        {!showApiKeyForm ? (
-          <button
-            onClick={() => setShowApiKeyForm(true)}
-            className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-white/10 bg-white/3 hover:bg-white/8 text-white/60 hover:text-white/80 text-sm font-medium transition-all"
-          >
-            <Key className="w-4 h-4" />
-            Mit API-Schlüssel verbinden
-          </button>
-        ) : (
-          <div className="space-y-3">
-            <div>
-              <label className="block text-white/50 text-xs font-medium mb-1.5">
-                FACEIT Nickname
-              </label>
-              <input
-                type="text"
-                value={nickname}
-                onChange={(e) => setNickname(e.target.value)}
-                placeholder="dein_nickname"
-                autoFocus
-                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-[#FF5500]/50 transition-colors"
-              />
-            </div>
-            <div>
-              <label className="block text-white/50 text-xs font-medium mb-1.5">
-                FACEIT Data API Key
-              </label>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                onKeyDown={(e) => { if (e.key === "Enter") handleApiKeyConnect(); }}
-                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-[#FF5500]/50 transition-colors font-mono"
-              />
-              <p className="text-white/25 text-xs mt-2">
-                Schlüssel erhalten auf:{" "}
-                <a
-                  href="https://developers.faceit.com/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[#FF5500]/80 hover:text-[#FF5500] underline"
-                >
-                  developers.faceit.com
-                </a>
-              </p>
-            </div>
-
-            {connectError && (
-              <div className="flex items-start gap-2 p-3 rounded-lg bg-red-900/25 border border-red-700/35">
-                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                <p className="text-red-300/90 text-xs">{connectError}</p>
-              </div>
-            )}
-
-            <button
-              onClick={handleApiKeyConnect}
-              disabled={connecting}
-              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-[#FF5500] hover:bg-[#ff6620] text-white font-semibold text-sm transition-all disabled:opacity-50"
-            >
-              {connecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Key className="w-4 h-4" />}
-              {connecting ? "Verbinde..." : "Verbinden"}
-            </button>
-
-            <button
-              onClick={() => { setShowApiKeyForm(false); setConnectError(null); }}
-              className="w-full py-2 text-white/30 hover:text-white/60 text-sm transition-colors"
-            >
-              Abbrechen
-            </button>
           </div>
         )}
 
