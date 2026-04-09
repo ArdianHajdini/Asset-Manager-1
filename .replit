@@ -27,3 +27,8 @@ timeoutMs = 20000
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+VITE_FACEIT_CLIENT_ID = "ec2d2cd8-f0fe-4ce3-a4d8-552d78ba6b58"

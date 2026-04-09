@@ -1,0 +1,76 @@
+We are changing the product direction.
+
+The app should no longer focus mainly on manual local demo import.
+The main user flow should now be:
+
+1. Connect FACEIT account
+2. Fetch recent CS2 FACEIT matches
+3. Show match list inside the app
+4. If a demo is available, allow:
+   - Download demo directly inside the app
+   - Extract it automatically
+   - Save it into the demo library
+   - Launch it in CS2 with one click
+
+This must become the primary UX.
+Manual drag-and-drop import should remain as a secondary fallback feature only.
+
+Please implement the architecture for this new primary flow.
+
+Requirements:
+
+1. Add FACEIT account connection flow
+- Prepare OAuth2 / FACEIT Connect integration
+- If full OAuth cannot be completed in this environment, build the exact structure and UI flow for it anyway
+- Clearly separate auth service, match service, and download service
+
+2. Add a new page:
+- "FACEIT Matches"
+Show recent CS2 matches from the connected account
+
+3. For each match, show:
+- opponent / teams if available
+- date
+- map if available
+- demo availability
+- buttons:
+  - Download demo
+  - Watch demo
+  - Open in library if already downloaded
+
+4. Add new services:
+- faceitAuthService.ts
+- faceitMatchService.ts
+- faceitDownloadService.ts
+
+5. Architecture:
+- OAuth / token logic must be isolated cleanly
+- Downloaded demos must flow into the existing local demo library
+- Existing local demo management should remain usable
+
+6. Download flow:
+- request or prepare signed demo download URL
+- download the compressed file
+- extract .gz to .dem
+- save to configured demo folder
+- register in library
+- then allow direct CS2 launch
+
+7. UI text must stay in German for the user
+
+8. If API access cannot be completed here, do not fake success.
+Instead:
+- build the real structure
+- mark clearly what needs real FACEIT credentials / app configuration later
+
+9. Add documentation:
+Create faceit-integration-plan.md
+Explain:
+- what is already implemented
+- what still requires real FACEIT developer credentials
+- what is needed for production
+
+10. Keep manual import as fallback only.
+FACEIT-connected download-and-watch must become the main product direction.
+
+Please implement this now as far as realistically possible.

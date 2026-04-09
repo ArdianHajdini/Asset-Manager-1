@@ -1,0 +1,108 @@
+I inspected the current repo logic again and I think the main practical problem is NOT the bitmask concept itself.
+
+The Reddit/manual method still ends with ONE combined bitmask value.
+So the current general approach with tv_listen_voice_indices is conceptually correct.
+
+The real issue is that the app is too strict.
+
+Current problem:
+- hasEntityIds(playersToHear) requires EVERY selected player to have entityId
+- buildFullPlayCommand(...) returns null if even one player is missing entityId
+- so if 4/5 players are resolved and 1 is missing, the app generates NO command at all
+
+For FACEIT demos this is too strict.
+
+I want you to change the logic so partial success is allowed.
+
+--------------------------------------------------
+REQUIRED CHANGE
+--------------------------------------------------
+
+For own_team / enemy mode:
+
+- If at least ONE selected player has entityId:
+  generate the bitmask from all known players
+- Do NOT require every player to have entityId
+- Only return null if ZERO players have entityId
+
+Also:
+- show a small warning if some players are missing:
+  example:
+  "4 von 5 Spielern erkannt – 1 Spieler konnte nicht automatisch zugeordnet werden."
+
+--------------------------------------------------
+CODE CHANGES
+--------------------------------------------------
+
+1. In voiceService.ts
+Replace the strict helper approach.
+
+Add these helpers:
+
+export function playersWithEntityIds(players: TauriDemoPlayer[]): TauriDemoPlayer[] {
+  return players.filter((p) => p.entityId !== undefined);
+}
+
+export function playersMissingEntityIds(players: TauriDemoPlayer[]): TauriDemoPlayer[] {
+  return players.filter((p) => p.entityId === undefined);
+}
+
+Then change buildVoiceCommands() like this:
+
+- own_team / enemy:
+  - if no playersToHear -> return null
+  - const knownPlayers = playersWithEntityIds(playersToHear)
+  - if knownPlayers.length === 0 -> return null
+  - build bitmask only from knownPlayers
+  - return:
+    tv_listen_voice_indices <bitmask>; tv_listen_voice_indices_h 0
+
+Do NOT require full coverage anymore.
+
+2. In DemoCard.tsx and MatchCard.tsx
+Replace:
+  hasEntityIds(playersToHear)
+
+with logic based on:
+  knownPlayers.length > 0
+
+Also show:
+- how many players were recognized
+- how many are still missing
+
+3. Keep the parser improvements
+Do NOT remove:
+- xuid match
+- normalized name fallback
+- duplicate-name protection
+
+4. Improve UI text
+If partial match:
+- allow command generation
+- show warning banner, e.g.:
+  "Sprachfilter teilweise verfügbar: 4 von 5 Spielern erkannt."
+
+If zero match:
+- still show:
+  "Sprachfilter für diese Demo nicht verfügbar."
+
+--------------------------------------------------
+OPTIONAL IMPROVEMENT
+--------------------------------------------------
+
+For "all" mode, improve it to:
+voice_enable 1; tv_listen_voice_indices -1; tv_listen_voice_indices_h -1
+
+But the main bug to fix now is the strict all-or-nothing player matching.
+
+--------------------------------------------------
+IMPORTANT
+--------------------------------------------------
+
+Do NOT rewrite the whole architecture.
+Just patch the strict matching logic.
+
+After patching, tell me:
+- which files changed
+- how many known/missing players are now shown
+- whether commands are now generated even with partial player-slot resolution

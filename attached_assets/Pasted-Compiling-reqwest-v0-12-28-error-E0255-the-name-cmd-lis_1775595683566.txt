@@ -1,0 +1,106 @@
+Compiling reqwest v0.12.28
+error[E0255]: the name `__cmd__list_demos` is defined multiple times
+   --> src\lib.rs:111:8
+    |
+110 | #[tauri::command]
+    | ----------------- previous definition of the macro `__cmd__list_demos` here
+111 | pub fn list_demos(directory: String) -> Result<Vec<DemoEntry>, String> {
+    |        ^^^^^^^^^^ `__cmd__list_demos` reimported here
+    |
+    = note: `__cmd__list_demos` must be defined only once in the macro namespace of this module
+
+error[E0255]: the name `__cmd__import_demo` is defined multiple times
+   --> src\lib.rs:141:8
+    |
+140 | #[tauri::command]
+    | ----------------- previous definition of the macro `__cmd__import_demo` here
+141 | pub fn import_demo(
+    |        ^^^^^^^^^^^ `__cmd__import_demo` reimported here
+    |
+    = note: `__cmd__import_demo` must be defined only once in the macro namespace of this module
+
+error[E0255]: the name `__cmd__delete_demo_file` is defined multiple times
+   --> src\lib.rs:190:8
+    |
+189 | #[tauri::command]
+    | ----------------- previous definition of the macro `__cmd__delete_demo_file` here
+190 | pub fn delete_demo_file(filepath: String) -> Result<(), String> {
+    |        ^^^^^^^^^^^^^^^^ `__cmd__delete_demo_file` reimported here
+    |
+    = note: `__cmd__delete_demo_file` must be defined only once in the macro namespace of this module
+
+error[E0255]: the name `__cmd__rename_demo_file` is defined multiple times
+   --> src\lib.rs:200:8
+    |
+199 | #[tauri::command]
+    | ----------------- previous definition of the macro `__cmd__rename_demo_file` here
+200 | pub fn rename_demo_file(filepath: String, new_name: String) -> Result<String, String> {
+    |        ^^^^^^^^^^^^^^^^ `__cmd__rename_demo_file` reimported here
+    |
+    = note: `__cmd__rename_demo_file` must be defined only once in the macro namespace of this module
+
+error[E0255]: the name `__cmd__open_folder` is defined multiple times
+   --> src\lib.rs:218:8
+    |
+217 | #[tauri::command]
+    | ----------------- previous definition of the macro `__cmd__open_folder` here
+218 | pub fn open_folder(path: String) -> Result<(), String> {
+    |        ^^^^^^^^^^^ `__cmd__open_folder` reimported here
+    |
+    = note: `__cmd__open_folder` must be defined only once in the macro namespace of this module
+
+error[E0255]: the name `__cmd__launch_cs2` is defined multiple times
+   --> src\lib.rs:270:8
+    |
+269 | #[tauri::command]
+    | ----------------- previous definition of the macro `__cmd__launch_cs2` here
+270 | pub fn launch_cs2(cs2_exe_path: String, demo_path: String) -> Result<LaunchResult, String> {
+    |        ^^^^^^^^^^ `__cmd__launch_cs2` reimported here
+    |
+    = note: `__cmd__launch_cs2` must be defined only once in the macro namespace of this module
+
+error[E0255]: the name `__cmd__check_cs2_path` is defined multiple times
+   --> src\lib.rs:290:8
+    |
+289 | #[tauri::command]
+    | ----------------- previous definition of the macro `__cmd__check_cs2_path` here
+290 | pub fn check_cs2_path(cs2_path: String) -> bool {
+    |        ^^^^^^^^^^^^^^ `__cmd__check_cs2_path` reimported here
+    |
+    = note: `__cmd__check_cs2_path` must be defined only once in the macro namespace of this module
+
+error[E0255]: the name `__cmd__detect_steam_path` is defined multiple times
+   --> src\lib.rs:295:8
+    |
+294 | #[tauri::command]
+    | ----------------- previous definition of the macro `__cmd__detect_steam_path` here
+295 | pub fn detect_steam_path() -> Option<String> {
+    |        ^^^^^^^^^^^^^^^^^ `__cmd__detect_steam_path` reimported here
+    |
+    = note: `__cmd__detect_steam_path` must be defined only once in the macro namespace of this module
+
+error[E0255]: the name `__cmd__get_file_info` is defined multiple times
+   --> src\lib.rs:333:8
+    |
+332 | #[tauri::command]
+    | ----------------- previous definition of the macro `__cmd__get_file_info` here
+333 | pub fn get_file_info(filepath: String) -> Result<DemoEntry, String> {
+    |        ^^^^^^^^^^^^^ `__cmd__get_file_info` reimported here
+    |
+    = note: `__cmd__get_file_info` must be defined only once in the macro namespace of this module
+
+error[E0255]: the name `__cmd__download_demo` is defined multiple times
+   --> src\lib.rs:347:14
+    |
+346 | #[tauri::command]
+    | ----------------- previous definition of the macro `__cmd__download_demo` here
+347 | pub async fn download_demo(
+    |              ^^^^^^^^^^^^^ `__cmd__download_demo` reimported here
+    |
+    = note: `__cmd__download_demo` must be defined only once in the macro namespace of this module
+
+For more information about this error, try `rustc --explain E0255`.
+error: could not compile `cs2-demo-manager` (lib) due to 10 previous errors
+failed to build app: failed to build app
+       Error failed to build app: failed to build app
+Error: Process completed with exit code 1.

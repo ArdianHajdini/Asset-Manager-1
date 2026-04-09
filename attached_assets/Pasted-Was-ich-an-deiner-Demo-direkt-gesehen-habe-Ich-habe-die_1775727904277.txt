@@ -1,0 +1,63 @@
+Was ich an deiner Demo direkt gesehen habe
+
+Ich habe die hochgeladene .dem grob geprüft:
+
+sie ist eine gültige CS2/PBDEMS2-Demo
+Größe: ca. 229 MB
+im Inhalt tauchen userinfo und de_mirage2 auf
+
+Das heißt: die Grundidee mit Stringtable-/Slot-Parsing ist bei genau dieser Demo plausibel. Das Problem ist also sehr wahrscheinlich nicht, dass die Demo „falsch“ ist.
+
+Dein Punkt mit Reddit: „muss man jeden Spieler einzeln aktivieren?“
+
+Nicht ganz.
+
+Was der Reddit-Guide beschreibt, ist:
+
+mit spec_player 1, spec_player 2, spec_player 3 usw. die Slots der Spieler herausfinden
+die gewünschten Slots in einen Bitmask-Wert umrechnen
+einen Command mit diesem Dezimalwert setzen:
+tv_listen_voice_indices <zahl>
+und ggf. den High-Teil über _h setzen.
+
+Also:
+
+ja, du identifizierst Spieler einzeln
+nein, du aktivierst sie am Ende nicht mit einem Command pro Spieler
+sondern du baust eine gemeinsame Bitmaske
+
+Das passt auch zu den Command-Beschreibungen: tv_listen_voice_indices ist ein Bitfield, kein „ein Spieler pro Command“-System. _h ist der obere 32-Bit-Teil.
+
+Warum es im Repo wahrscheinlich immer noch scheitert
+
+Der wichtigste konkrete Fehler ist aktuell nicht der Parser allein, sondern die zu strenge Logik im Frontend:
+
+DemoCard.tsx und MatchCard.tsx setzen autoMuteAvailable nur dann auf true, wenn hasEntityIds(playersToHear) true ist
+hasEntityIds(...) verlangt, dass jeder einzelne Spieler in der ausgewählten Gruppe eine entityId hat
+buildFullPlayCommand(...) gibt sonst null zurück
+Ergebnis: wenn nur 1 Spieler aus deinem Team keinen Slot hat, wird gar kein Command gebaut.
+
+Ich glaube, genau das ist der größte praktische Denkfehler.
+
+Denn bei FACEIT-Demos ist es völlig realistisch, dass:
+
+4 von 5 Spielern sauber gemappt werden
+aber 1 Spieler nicht
+
+Und dann sollte die App trotzdem arbeiten mit:
+
+4/5 Spieler erkannt
+Bitmaske aus den bekannten Slots
+Warnung für die fehlenden Spieler
+
+Stattdessen blockiert sie aktuell alles.
+
+Mein Urteil
+Was richtig ist
+Bitmask-Ansatz ist konzeptionell richtig
+XUID- und Name-Fallback im Rust-Parser ist sinnvoll
+tv_listen_voice_indices als Endziel ist korrekt.
+Was falsch ist
+die App verlangt momentan faktisch „alle Slots müssen bekannt sein“
+das ist bei FACEIT-Demos zu streng
+dadurch wirkt es, als würde das ganze Feature nicht funktionieren

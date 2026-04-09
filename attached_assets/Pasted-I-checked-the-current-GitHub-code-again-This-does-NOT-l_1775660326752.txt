@@ -1,0 +1,66 @@
+I checked the current GitHub code again.
+
+This does NOT look like a WebView freeze problem.
+The likely bug is the native Steam/CS2 launch logic.
+
+Current behavior in the repo:
+- DemoCard calls launchDemoInCS2(...)
+- frontend treats result === "launched" as success
+- Rust launch_cs2() returns "launched" as soon as steam.exe or cmd.exe successfully spawns
+- but that only proves the launcher process started
+- it does NOT prove that Steam actually passed +playdemo to CS2
+- it does NOT prove that the demo really opened
+
+This matches my real test:
+- the demo file is in the correct replay folder
+- the generated manual playdemo command works
+- only the automatic "In CS2 öffnen" button fails
+
+Please fix THIS exact issue.
+
+Required changes:
+
+1. Stop treating "spawn() succeeded" as proof that the demo started.
+- Right now steam.exe -applaunch 730 +playdemo ... returning spawn().is_ok() is considered success
+- that is too optimistic and likely the bug
+
+2. Change the launch strategy:
+A. First try the most reliable method for real CS2 demo opening
+B. If the launcher handoff is not verifiable, do NOT immediately report success
+C. Use a safer UX fallback:
+   - open CS2 / Steam
+   - copy the correct console command automatically
+   - show a modal telling the user exactly what to do
+
+3. Add precise launch debug logging:
+- generated playdemo arg
+- exact steam.exe command used
+- exact steam:// URI used
+- which branch was taken
+- what status was returned to the frontend
+
+4. Re-evaluate the current primary method:
+- steam.exe -applaunch 730 +playdemo replays/<name>
+Check whether Steam actually forwards those launch args to an already installed CS2 in practice.
+If this is unreliable, do NOT keep it as a fake-success primary path.
+
+5. Re-evaluate the URI fallback:
+- current URI is steam://rungameid/730//+playdemo%20replays/<name>
+Verify whether this format truly works for CS2 demo launch on Windows.
+If not, replace it.
+
+6. Frontend behavior:
+- Only show "Demo gestartet" if the launch path is truly reliable
+- Otherwise show a semi-automatic fallback:
+  - command already copied
+  - CS2 opened
+  - instructions shown
+
+7. Do NOT change replay-folder logic anymore.
+Do NOT change the manual playdemo command generation anymore.
+Those already work.
+
+8. After the patch, explain:
+- what exact bug caused the button failure
+- which launch path is now primary
+- whether fully automatic launch is actually reliable or whether the app should intentionally use a semi-automatic fallback UX

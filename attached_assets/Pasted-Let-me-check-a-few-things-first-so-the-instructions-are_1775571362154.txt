@@ -1,0 +1,169 @@
+Let me check a few things first so the instructions are exact, not generic.
+
+
+5 actions
+The vite config currently throws if PORT and BASE_PATH aren't set — those are Replit-specific env vars. That would crash immediately on any local machine. I need to fix that first, then give you the plan.
+
+
+3 actions
+Now I have everything I need. Two code fixes are required before the app can run locally, then I'll write the complete Windows guide.
+
+Fix 1: vite.config.ts throws on missing PORT/BASE_PATH — crashes immediately on any local machine. Need defaults.
+
+Fix 2: tauri.conf.json devUrl is hardcoded to the Replit port 21149 — Tauri dev won't connect to the frontend. Standard local port is 1420.
+
+
+2 actions
+Now fix the Tauri devUrl:
+
+
+2 actions
+Restart the dev server to confirm the vite.config change doesn't break Replit's build, then write the full guide:
+
+
+2 actions
+Good, still running. Let me verify it's clean then write the complete guide:
+
+
+2 actions
+Replit still works cleanly. Now the complete guide:
+
+What I just fixed in the code
+Two things would have broken on any local machine:
+
+vite.config.ts — previously threw a hard error if PORT or BASE_PATH were missing (Replit-only env vars). Now it defaults to PORT=1420 and BASE_PATH=/ when those vars aren't set. Replit still works exactly as before.
+tauri.conf.json devUrl — was hardcoded to http://localhost:21149 (Replit's dynamically assigned port). Changed to http://localhost:1420 — the standard Tauri dev port that will work on your Windows machine.
+Step-by-step Windows execution plan
+Phase 0 — Install prerequisites (one-time)
+Install these in order. Each has an official installer — no manual PATH manipulation needed if you use the installers.
+
+1. Visual Studio C++ Build Tools (required by Rust on Windows — do this first)
+
+Download: https://visualstudio.microsoft.com/visual-cpp-build-tools/
+In the installer, select: "Desktop development with C++"
+Takes ~5–10 GB. This is mandatory — without it Rust cannot compile anything.
+2. Rust toolchain
+
+winget install Rustlang.Rustup
+
+Then open a new terminal and run:
+
+rustup target add x86_64-pc-windows-msvc
+rustup update stable
+
+Confirm with: rustc --version — should show rustc 1.7x.x
+
+3. WebView2 (required by Tauri on Windows — usually already present on Win10/11)
+
+Check: open any Edge browser window. If it works, WebView2 is already installed.
+If needed: https://developer.microsoft.com/en-us/microsoft-edge/webview2/
+4. Node.js 20 LTS
+
+winget install OpenJS.NodeJS.LTS
+
+Confirm: node --version
+
+5. pnpm
+
+npm install -g pnpm
+
+Confirm: pnpm --version
+
+Phase 1 — Get the code on your Windows machine
+In Replit, click the three-dot menu → Download as zip, or use Git if you have it set up:
+
+git clone <your-replit-git-url> cs2-demo-manager
+cd cs2-demo-manager
+
+Install all dependencies from the project root (the monorepo root, not inside artifacts/):
+
+pnpm install
+
+This installs everything — Rust toolchain integration, all npm packages, Tauri CLI.
+
+Phase 2 — Dev mode (fastest way to verify it works)
+pnpm tauri dev starts the Vite frontend on port 1420 and launches a real native window connected to it. Hot-reload still works. No installer, no bundled exe — just a live native window.
+
+cd artifacts\cs2-demo-manager
+pnpm tauri dev
+
+What you will see:
+
+A terminal window compiling Rust (first run takes 2–5 minutes — all dependencies compile from source)
+A native Windows window opens showing the CS2 Demo Manager UI
+The title bar says "CS2 Demo Manager", not a browser tab
+If compilation fails, the most common causes on Windows:
+
+Missing Visual C++ Build Tools → install as described above
+Linker error LINK : fatal error → run rustup target add x86_64-pc-windows-msvc and retry
+VCRUNTIME140.dll errors → repair the Visual C++ Redistributable from Microsoft's site
+Phase 3 — Verify filesystem (demo import)
+Once the native window is open:
+
+Go to Einstellungen → confirm the demo folder is C:\CS2Demos (or change it to wherever you want)
+Go to Import → drag a .dem.gz file into the drop zone (get a test file from any FACEIT match page, or use any .dem.gz you have)
+After import, open File Explorer and check: C:\CS2Demos\<filename>.dem should exist as a real file
+Go to Bibliothek — the demo should appear with its filename, size, and date from the actual file metadata
+This confirms: Rust import_demo → GzDecoder → fs::write → real disk write.
+
+Phase 4 — Verify .dem.gz extraction
+In the same import test above:
+
+Import a .dem.gz file with Auto-Entpacken enabled (default)
+Check C:\CS2Demos — you should see only match.dem, not match.dem.gz
+Open the .dem file in a hex editor (HxD is free) — first 8 bytes should be 76 45 4E 56 00 00 00 04 (CS2 demo magic), NOT 1F 8B (gzip magic)
+This confirms the gzip wrapper was removed and the inner demo file is intact.
+
+Phase 5 — Verify CS2 launch
+Make sure CS2 and Steam are installed and you can open CS2 normally
+In Einstellungen, set the CS2 path to your actual cs2.exe (e.g. C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\bin\win64\cs2.exe)
+In Bibliothek, click In CS2 ansehen on any imported demo
+Expected: CS2 opens (or switches to foreground if already running) and starts playing the demo
+What Rust tries in sequence:
+
+cmd /C start "" "steam://rungame/730/0/+playdemo+<path>" — Steam handles it and launches CS2
+If that fails: direct spawn of cs2.exe -game csgo +playdemo <path>
+If that fails: clipboard fallback — a console command is copied, you paste it into CS2's console
+Phase 6 — Verify FACEIT match fetch and demo download
+Get a free FACEIT Data API key from https://developers.faceit.com/ (free account, takes 2 minutes)
+In the app, go to FACEIT → click Mit API-Schlüssel verbinden
+Enter your FACEIT nickname and the API key → click connect
+Your match history should load — real HTTPS call to open.faceit.com/data/v4
+On a match that shows a download button, click Download — the app calls the Rust download_demo command which fetches the file from FACEIT's CDN, extracts it, and saves it to your demo folder
+Check C:\CS2Demos — the .dem file should appear
+Note on FACEIT demo availability: Not every match has a demo URL. FPL (Faceit Pro League) and high-level ranked matches reliably have them. Check the FACEIT match page in your browser first — if you see a "Download Demo" button there, the app can download it too.
+
+Phase 7 — Build the installable .exe (optional, for distribution)
+Once pnpm tauri dev works end-to-end, build the real installer:
+
+cd artifacts\cs2-demo-manager
+pnpm tauri build
+
+Output locations after build completes:
+
+src-tauri\target\release\cs2-demo-manager.exe     ← portable exe (no installer)
+src-tauri\target\release\bundle\msi\              ← Windows MSI installer
+src-tauri\target\release\bundle\nsis\             ← NSIS installer (.exe)
+
+The MSI is what you'd distribute. It handles installation, Start Menu entry, and uninstall.
+
+Summary: what you need to run
+Thing	Where to get it
+Visual Studio C++ Build Tools	https://visualstudio.microsoft.com/visual-cpp-build-tools/
+Rust (via rustup)	winget install Rustlang.Rustup
+Node.js 20 LTS	winget install OpenJS.NodeJS.LTS
+pnpm	npm install -g pnpm
+WebView2	Already on Win10/11 via Edge
+FACEIT API key	https://developers.faceit.com/
+A test .dem.gz file	Any FACEIT match page → Download Demo
+Commands in order
+# 1. From project root
+pnpm install
+# 2. Go to the app directory
+cd artifacts\cs2-demo-manager
+# 3. Dev mode (native window, hot reload, 2-5 min first compile)
+pnpm tauri dev
+# 4. Production build (after dev works)
+pnpm tauri build
+
+That's everything. The first Rust compile is the only slow step — after that, incremental rebuilds are under 10 seconds.

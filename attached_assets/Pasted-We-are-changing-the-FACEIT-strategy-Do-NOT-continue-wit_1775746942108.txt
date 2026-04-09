@@ -1,0 +1,67 @@
+We are changing the FACEIT strategy.
+
+Do NOT continue with direct demo downloads via FACEIT download API.
+Do NOT build or maintain private/signed download API logic anymore.
+
+New FACEIT goal:
+- FACEIT OAuth login
+- load the user's FACEIT matches inside the app
+- show useful match info
+- instead of downloading the demo inside the app, open/link the user directly to the FACEIT match page
+- the user downloads the demo manually there
+- then our app scans the Downloads folder and processes the demo locally
+
+Why we are doing this:
+- much simpler
+- less fragile
+- less API/legal risk
+- no need to contact FACEIT for private download API access
+- still gives a very good user experience
+
+Target flow:
+1. User logs into FACEIT via OAuth
+2. App loads recent matches
+3. App shows match info (map, result, date, etc.)
+4. App has a button like:
+   - "Auf FACEIT öffnen"
+   - or "Zur Match-Seite"
+5. User downloads the demo on FACEIT manually
+6. User returns to the app
+7. App scans the Downloads folder
+8. App detects new .dem / .dem.gz / .dem.zst files
+9. App extracts/moves the demo into the replay folder
+10. App enables command generation / voice modes / CS2 opening
+
+Please refactor the FACEIT area accordingly:
+
+1. Keep / implement OAuth login
+- proper FACEIT login flow
+- user identity / match history
+
+2. Remove direct demo download dependency
+- do not rely on download API
+- do not require signed demo download URLs
+- do not keep fake/incomplete direct download behavior
+
+3. In each FACEIT match card:
+- show match info
+- add a button to open the FACEIT match page in browser
+
+4. Improve local workflow after manual download:
+- strong Downloads-folder scan
+- detect newest FACEIT demos
+- process them into replay folder
+
+5. Keep the UI honest:
+- do not say "Demo herunterladen" inside the app if the app is only linking to FACEIT
+- instead say:
+  - "Auf FACEIT öffnen"
+  - "Demo auf FACEIT herunterladen"
+  - "Downloads-Ordner scannen"
+
+6. Update docs/comments to reflect the new strategy
+
+After patching, tell me:
+- which files changed
+- what FACEIT functionality remains
+- what direct download logic was removed or disabled

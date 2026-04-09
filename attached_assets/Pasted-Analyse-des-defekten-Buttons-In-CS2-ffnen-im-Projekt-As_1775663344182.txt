@@ -1,0 +1,510 @@
+Analyse des defekten Buttons «In CS2 öffnen» im Projekt Asset-Manager-1
+Executive Summary
+Der Klick-Flow des Buttons «In CS2 öffnen» ist in eurer aktuellen Implementierung grundsätzlich korrekt verdrahtet (React → Service → Tauri invoke → Rust-Command → OS-Spawn). Die aus User‑Sicht «kaputte» Stelle ist nicht der Button selbst, sondern die Zuverlässigkeit der gewählten Launch‑Strategie und die Steam‑Pfadlogik im Rust-Backend.
+
+Der wichtigste technische Befund: steam.exe wird im Windows‑Backend aus cs2.exe “7 Ordner hoch” abgeleitet und nur dann als PRIMARY‑Methode genutzt. Das funktioniert nur, wenn CS2 im Standardpfad unterhalb des Steam-Installationsordners liegt. Sobald CS2 aber in einem separaten Steam‑Library‑Ordner installiert ist (z.B. D:\SteamLibrary\...), existiert dort kein steam.exe. Dann fällt euer Code auf die Steam‑URI‑Methode zurück. 
+
+Diese URI‑Methode ist für steam://rungameid/730//+playdemo… nicht robust, weil CS2 (bzw. Steam‑Protocol‑Launch) einige +command‑Argumente ignorieren kann. Das ist als reales CS2‑Problem dokumentiert (Beispiel: +connect_hltv wird via Steam‑Protocol ignoriert, obwohl der gleiche Command in der In‑Game‑Konsole funktioniert). 
+
+Folge: Der Button kann CS2 zwar “irgendwie” öffnen, aber das automatische Starten der Demo via +playdemo ist unzuverlässig – genau das deckt sich mit eurer Beobachtung: manuell in der Konsole funktioniert es, automatisch über den Button nicht. 
+
+Die empfohlenen Fixes sind daher:
+
+Steam.exe zuverlässig finden (Registry/Settings), nicht aus cs2.exe ableiten.
+Steam.exe -applaunch 730 +playdemo … als Primary erzwingen (URI nur als “Open CS2” ohne +playdemo).
+Direktstart von cs2.exe mit korrektem Working Directory (.../game/csgo), sonst scheitern relative replays/... Pfade.
+Nicht spawn().is_ok() als “erfolgreich gestartet” behandeln; stattdessen Methode/Attempt zurückgeben + UX‑Fallback (Guide/Clipboard ist schon da, aber Status/Debug fehlt). 
+Repo-Scan und untersuchte Dateien
+Fokuspfad: Asset-Manager-1/artifacts/cs2-demo-manager/
+
+Ich habe für den Launch‑Bug direkt untersucht (exakt diese Dateien):
+
+Frontend
+
+artifacts/cs2-demo-manager/src/components/DemoCard.tsx (Button/UI‑Handler und Status/UI‑Feedback) 
+artifacts/cs2-demo-manager/src/services/cs2Service.ts (Playdemo‑Arg/Steam‑URI bauen, Tauri vs Browser Launch) 
+artifacts/cs2-demo-manager/src/services/tauriBridge.ts (Tauri Detection, invoke("launch_cs2", …)) 
+Backend (Tauri/Rust)
+
+artifacts/cs2-demo-manager/src-tauri/src/lib.rs (Command launch_cs2, OS‑Spawns, Return‑Status) 
+artifacts/cs2-demo-manager/src-tauri/src/main.rs (App Entry; nur Delegation, keine Launch‑Logik) 
+Ergänzend als Referenz für Argument‑Mapping (camelCase ↔ snake_case):
+
+Tauri v2 Doku: Passing Arguments / camelCase default 
+Hinweis zu Line‑Ranges: Einige eurer TSX/TS Dateien sind im Repo stark “komprimiert” gespeichert; wo GitHub keine stabilen, sinnvollen Zeilenraster liefert, referenziere ich daher Funktionsnamen + Code‑Snippet (wie von dir explizit erlaubt).
+
+End-to-End Launch Flow
+Schritt-für-Schritt Trace
+1) UI → Handler (DemoCard)
+
+Der Button «In CS2 öffnen» ruft handleLaunch() auf. 
+handleLaunch() macht immer zuerst Clipboard Copy (copyToClipboard(consoleCmd)), dann Launch‑Attempt via launchDemoInCS2(). 
+Wichtig: opened = result === "launched" und anschliessend wird immer das “semi-automatic guide” UI gezeigt (nicht nur bei Fehler). 
+2) Handler → Service (cs2Service)
+
+launchDemoInCS2(demoFilename, cs2Path) erstellt:
+playdemoArg = replays/<name-ohne-.dem>
+consoleCmd = playdemo replays/<name>
+steamUri = steam://rungameid/730//+playdemo%20<playdemoArg> 
+In Tauri Mode ruft es tauriLaunchCS2(cs2Path, playdemoArg) und interpretiert result.status. 
+3) Service → Bridge (tauriBridge)
+
+tauriLaunchCS2() lädt dynamisch invoke aus @tauri-apps/api/core und macht invoke("launch_cs2", { cs2ExePath, playdemoArg }). 
+Das Argument‑Mapping ist korrekt, weil Tauri default camelCase fordert (und snake_case nur per rename_all). 
+4) Bridge → Rust Command (lib.rs)
+
+In lib.rs ist commands::launch_cs2 in invoke_handler registriert. 
+launch_cs2(cs2_exe_path, playdemo_arg) baut console_cmd = playdemo <arg> und versucht nacheinander PRIMARY/FALLBACKS. 
+5) Rust Command → OS
+
+Windows PRIMARY: steam.exe -applaunch 730 +playdemo <playdemo_arg> – aber nur, wenn steam.exe “gefunden” wurde. 
+FALLBACK1: cmd /C start "" "steam://rungameid/730//+playdemo%20<playdemo_arg>" 
+FALLBACK2: cs2.exe +playdemo <playdemo_arg> (direkt). 
+Return: LaunchResult { status: "launched" | "clipboard_fallback", command: Option<String> } 
+Sequenzdiagramm
+Windows (steam.exe/cmd/cs2.exe)
+lib.rs::commands::launch_cs2
+Tauri IPC
+tauriBridge.ts
+cs2Service.ts
+DemoCard.tsx
+Windows (steam.exe/cmd/cs2.exe)
+lib.rs::commands::launch_cs2
+Tauri IPC
+tauriBridge.ts
+cs2Service.ts
+DemoCard.tsx
+alt
+[cmd spawn fails]
+alt
+[steam.exe not found / spawn fails]
+alt
+[isTauri() == true]
+[Browser / Wrong detection]
+handleLaunch()
+1
+launchDemoInCS2(demoFilename, cs2Path)
+2
+buildPlaydemoArg + buildSteamLaunchUri
+3
+tauriLaunchCS2(cs2Path, playdemoArg)
+4
+invoke("launch_cs2", {cs2ExePath, playdemoArg})
+5
+launch_cs2(cs2_exe_path, playdemo_arg)
+6
+spawn steam.exe -applaunch 730 +playdemo ...
+7
+spawn cmd /C start "" "steam://rungameid/730//+playdemo%20..."
+8
+spawn cs2.exe +playdemo ...
+9
+LaunchResult {status, command}
+10
+LaunchResult
+11
+LaunchResult
+12
+"launched" | "clipboard_fallback"
+13
+window.open(steam://rungameid/730//+playdemo%20...)
+14
+"launched" (optimistisch)
+15
+setShowGuide(true) + Status-Meldung
+16
+
+
+Code anzeigen
+Befunde zu Bugs und Mismatches
+Steam.exe Pfadableitung ist in Multi-Library Setups falsch
+Wo: src-tauri/src/lib.rs, Funktion commands::launch_cs2.
+
+Problematischer Code (Snippet): Steam.exe wird ab cs2_exe_path “7 dirs hoch” abgeleitet und dann steam.exe dort gesucht. 
+
+Warum das in der Praxis scheitert: Steam erlaubt mehrere Library‑Ordner auf verschiedenen Laufwerken; diese Library‑Ordner enthalten steamapps/... (und damit cs2.exe), aber nicht zwingend steam.exe. Das ist explizit so dokumentiert: Steam speichert Library‑Ordner in libraryfolders.vdf, plus es gibt einen separaten Steam‑Install‑Pfad. 
+
+Effekt: PRIMARY (steam.exe -applaunch…) wird übersprungen → FALLBACK1 (Steam‑URI) wird verwendet → Demo startet nicht zuverlässig.
+
+Steam protocol steam://rungameid/730//+command ist unzuverlässig für Console-Commands
+Wo: src-tauri/src/lib.rs, FALLBACK1 und im Frontend buildSteamLaunchUri.
+
+Problematischer Code (Snippet): FALLBACK1 erzeugt steam://rungameid/730//+playdemo%20… und bewertet cmd spawn als Erfolg. 
+
+Warum das oft “nichts macht”:
+
+Es gibt dokumentierte CS2‑Fälle, wo ein +command via Steam-Protocol ignoriert wird, obwohl das gleiche Kommando in der CS2‑Konsole funktioniert (Beispiel +connect_hltv). 
+Euer Code setzt status="launched" bereits, wenn cmd gestartet wurde (spawn().is_ok()), obwohl das keinerlei Garantie ist, dass Steam/CS2 den Command akzeptiert oder dass CS2 überhaupt startet. 
+User-Symptom: CS2 öffnet ggf. nur ins Menü oder gar nicht sichtbar; Demo startet nicht “automatisch”; manuelles Pasten klappt.
+
+spawn().is_ok() wird als “Erfolg” interpretiert
+Wo: Rust launch_cs2 (PRIMARY/FALLBACKS) und Frontend handleLaunch.
+
+Code: In Rust wird spawn().is_ok() als ok gewertet und direkt status:"launched" zurückgegeben. 
+
+Im Frontend wird opened = result === "launched" gesetzt. 
+
+Warum das fachlich falsch ist: Ein erfolgreicher Prozess-Spawn bedeutet nur, dass ein Prozess erstellt wurde; er beweist nicht, dass Steam Parameter an CS2 durchgereicht hat oder dass CS2 die Demo lädt. Das ist besonders relevant auf Windows, wo Argumente letztlich als eine Commandline‑String geparsed werden und Downstream‑Programme selbst entscheiden, was sie konsumieren. 
+
+Direkter CS2.exe Start setzt kein Working Directory
+Wo: Rust launch_cs2, FALLBACK2.
+
+Code: Command::new(&exe).args(["+playdemo", &playdemo_arg])...spawn() ohne .current_dir(...). 
+
+Warum das brechen kann: playdemo_arg ist absichtlich relativ (replays/...). Ohne korrektes Working Directory (CS2 erwartet typischerweise .../game/csgo) kann replays/... ins Leere zeigen. Das erklärt “CS2 startet evtl., aber Demo nicht”. (Euer Frontend geht explizit von relativen Pfaden aus.) 
+
+Inkonsistente Dokumentation im Code
+Wo: Rust Docstring über launch_cs2.
+
+Problem: Der Kommentar beschreibt PRIMARY als steam://rungame/730/0/+playdemo ... (Space statt %20 etc.), während die Implementierung tatsächlich steam.exe -applaunch ... als PRIMARY und steam://rungameid/... als FALLBACK nutzt. 
+
+Das ist kein Runtime‑Bug, aber es erhöht massiv die Wahrscheinlichkeit, dass bei weiteren Fixes erneut “falsche” Launch‑Strings gebaut werden.
+
+Empfohlene Launch-Strategie auf Windows und konkrete Patches
+Launch-Strategie Bewertung
+Ziel: CS2 wirklich öffnen + Demo nach Möglichkeit automatisch starten, sonst sauberer UX‑Fallback.
+
+Steam.exe -applaunch ist die Primary‑Strategie
+Vorteil: Argumente werden direkt an Steam übergeben (kein URI‑Parsing, kein start‑Zitat‑Chaos). Das ist in eurem Code bereits als PRIMARY gedacht. 
+Problem heute: steam.exe Pfad ist in Multi‑Library Setups oft falsch abgeleitet.
+Steam‑URI sollte nur “CS2 öffnen” (ohne +playdemo) sein
+Hintergrund: steam://rungameid/730//+command kann spezifische Commands ignorieren. 
+Empfehlung: URI als Fallback nur für steam://rungameid/730 (oder steam://run/730) verwenden; Demo dann via Clipboard/Guide.
+Direkter cs2.exe Start nur als letzter Versuch
+Wenn genutzt, zwingend current_dir auf .../game/csgo setzen.
+Konkrete Windows-Kommandos (mit Quoting-Fallen)
+Warum start "" ...? start verwendet den ersten quoted String als Fenstertitel; deshalb braucht es ein leeres Title‑Argument. Das ist Standardverhalten und in vielen Quellen beschrieben. 
+
+Empfohlene Strings:
+
+Primary (aus Rust via Command::new)
+"C:\Program Files (x86)\Steam\steam.exe" -applaunch 730 +playdemo replays/match_123
+Fallback “CS2 öffnen” (URI, ohne +playdemo)
+cmd /C start "" "steam://rungameid/730"
+Wenn URI doch mit Argumenten getestet werden soll (nur optional)
+cmd /C start "" "steam://rungameid/730//+playdemo%20replays/match_123"
+Erwartung: Kann funktionieren, kann aber Commands ignorieren. 
+Patch-Vorschläge
+Die folgenden Patches sind so formuliert, dass euer Dev in Replit sie direkt umsetzen kann. Wo Diff‑Zeilen wegen minifizierten Dateien schwer matchen, gebe ich “replace function body” an.
+
+Patch A: Rust launch_cs2 — Steam.exe via Registry finden + Working Dir setzen + bessere Result-Infos
+Datei: artifacts/cs2-demo-manager/src-tauri/src/lib.rs
+Funktion: commands::launch_cs2
+
+Ziele:
+
+Steam.exe nicht aus cs2.exe ableiten, sondern via Registry (InstallPath) suchen.
+FALLBACK1: URI nur zum Öffnen von CS2, ohne +playdemo.
+FALLBACK2: .current_dir(csgo_dir) setzen.
+Zusatzfelder im Result: method, note für Debug/UX.
+Code-Block zum Einfügen/Ersetzen (Richtlinie: ersetze LaunchResult Struct + Body von launch_cs2; restlicher File unverändert):
+
+rust
+Kopieren
+// --- replace the LaunchResult struct to include method/note (backwards compatible) ---
+#[derive(Serialize, Deserialize, Debug)]
+pub struct LaunchResult {
+  pub status: String,              // "launched" | "clipboard_fallback"
+  pub command: Option<String>,      // debug: what we tried / console cmd
+  pub method: Option<String>,       // "steam_exe_applaunch" | "steam_uri_open" | "direct_cs2" | "none"
+  pub note: Option<String>,         // human-readable hint
+}
+
+// --- inside pub mod commands { ... } ---
+
+#[tauri::command]
+pub fn launch_cs2(
+  cs2_exe_path: String,
+  playdemo_arg: String,
+) -> Result<LaunchResult, String> {
+  let console_cmd = format!("playdemo {}", playdemo_arg);
+
+  #[cfg(target_os = "windows")]
+  {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    // 1) Resolve steam.exe from registry (works even if CS2 is in D:\SteamLibrary)
+    let steam_exe_path: Option<std::path::PathBuf> = {
+      let hklm = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE);
+      if let Ok(key) = hklm.open_subkey("SOFTWARE\\WOW6432Node\\Valve\\Steam") {
+        if let Ok(install_path) = key.get_value::<String, _>("InstallPath") {
+          let candidate = std::path::PathBuf::from(install_path).join("steam.exe");
+          if candidate.exists() { Some(candidate) } else { None }
+        } else { None }
+      } else { None }
+    };
+
+    eprintln!("[CS2DM] launch_cs2: cs2_exe_path={}", cs2_exe_path);
+    eprintln!("[CS2DM] launch_cs2: playdemo_arg={}", playdemo_arg);
+    eprintln!("[CS2DM] launch_cs2: steam_exe_path={:?}", steam_exe_path);
+
+    // 2) PRIMARY: steam.exe -applaunch 730 +playdemo replays/<name>
+    if let Some(ref steam_exe) = steam_exe_path {
+      let spawn_ok = std::process::Command::new(steam_exe)
+        .args(["-applaunch", "730", "+playdemo", &playdemo_arg])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .is_ok();
+
+      eprintln!("[CS2DM] PRIMARY steam.exe -applaunch spawn_ok={}", spawn_ok);
+
+      if spawn_ok {
+        return Ok(LaunchResult {
+          status: "launched".to_string(),
+          method: Some("steam_exe_applaunch".to_string()),
+          command: Some(format!("\"{}\" -applaunch 730 +playdemo \"{}\"", steam_exe.display(), playdemo_arg)),
+          note: Some("Steam gestartet (applaunch). Falls Demo nicht automatisch startet: Konsole öffnen und playdemo einfügen.".to_string()),
+        });
+      }
+    }
+
+    // 3) FALLBACK1: open CS2 via Steam URI *without* +playdemo (more reliable to at least open the game)
+    // Needs the empty title "" to avoid cmd.exe start quoting issues.
+    let uri = "steam://rungameid/730".to_string();
+    let raw_cmd = format!("/C start \"\" \"{}\"", uri);
+
+    let uri_spawn_ok = std::process::Command::new("cmd")
+      .raw_arg(&raw_cmd)
+      .creation_flags(CREATE_NO_WINDOW)
+      .spawn()
+      .is_ok();
+
+    eprintln!("[CS2DM] FALLBACK1 open-only uri_spawn_ok={}", uri_spawn_ok);
+
+    if uri_spawn_ok {
+      return Ok(LaunchResult {
+        status: "launched".to_string(),
+        method: Some("steam_uri_open".to_string()),
+        command: Some(format!("cmd /C start \"\" \"{}\"", uri)),
+        note: Some("CS2 über Steam-URI geöffnet. Demo bitte via Konsole (playdemo) starten.".to_string()),
+      });
+    }
+
+    // 4) FALLBACK2: spawn cs2.exe directly (set working dir so relative replays/ works)
+    let exe = std::path::PathBuf::from(&cs2_exe_path);
+    if exe.exists() {
+      let csgo_dir = exe
+        .parent().and_then(|p| p.parent()).and_then(|p| p.parent()) // win64 -> bin -> game
+        .map(|game_dir| game_dir.join("csgo"));
+
+      eprintln!("[CS2DM] FALLBACK2 csgo_dir={:?}", csgo_dir);
+
+      let mut cmd = std::process::Command::new(&exe);
+      if let Some(ref dir) = csgo_dir {
+        if dir.exists() {
+          cmd.current_dir(dir);
+        }
+      }
+
+      let direct_ok = cmd
+        .args(["+playdemo", &playdemo_arg])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .is_ok();
+
+      eprintln!("[CS2DM] FALLBACK2 direct_ok={}", direct_ok);
+
+      if direct_ok {
+        return Ok(LaunchResult {
+          status: "launched".to_string(),
+          method: Some("direct_cs2".to_string()),
+          command: Some(console_cmd.clone()),
+          note: Some("CS2 direkt gestartet. Falls Demo nicht startet: Konsole öffnen und playdemo einfügen.".to_string()),
+        });
+      }
+    }
+
+    // LAST: clipboard fallback
+    Ok(LaunchResult {
+      status: "clipboard_fallback".to_string(),
+      method: Some("none".to_string()),
+      command: Some(console_cmd),
+      note: Some("Konnte CS2 nicht automatisch öffnen. Bitte manuell starten und playdemo einfügen.".to_string()),
+    })
+  }
+
+  #[cfg(not(target_os = "windows"))]
+  {
+    // keep existing non-windows strategy (optional improvement later)
+    Ok(LaunchResult {
+      status: "clipboard_fallback".to_string(),
+      method: Some("none".to_string()),
+      command: Some(console_cmd),
+      note: Some("Nicht-Windows Platform: bitte CS2 manuell starten.".to_string()),
+    })
+  }
+}
+Warum dieser Patch den Button wirklich repariert: Er eliminiert die falsche Annahme “cs2.exe liegt unter Steam‑Root” und nutzt stattdessen den Steam‑Installationspfad aus der Registry – genau dort liegt steam.exe auch dann, wenn CS2 in D:\SteamLibrary installiert ist. Das entspricht dem allgemeinen Steam‑Setup (InstallPath via Registry; Libraries via libraryfolders.vdf). 
+
+Patch B: Frontend Typen anpassen + Debug-Feld sichtbar machen
+Datei: artifacts/cs2-demo-manager/src/services/tauriBridge.ts
+
+Aktuell ist TauriLaunchResult nur { status, command? }. 
+
+Mit Patch A kommen method und note.
+
+Änderungsvorschlag (klein, direkt):
+
+ts
+Kopieren
+export interface TauriLaunchResult {
+  status: "launched" | "clipboard_fallback";
+  command?: string;
+  method?: "steam_exe_applaunch" | "steam_uri_open" | "direct_cs2" | "none";
+  note?: string;
+}
+Der Rest (invoke("launch_cs2", { cs2ExePath, playdemoArg })) bleibt gleich. 
+
+Patch C: cs2Service.launchDemoInCS2 — Result “durchreichen” statt nur String
+Datei: artifacts/cs2-demo-manager/src/services/cs2Service.ts
+
+Heute gibt launchDemoInCS2 nur "launched" | "clipboard_fallback" zurück und verliert Debug‑Infos. 
+
+Empfehlung: Neu einen strukturierten Return anbieten:
+
+ts
+Kopieren
+export type LaunchOutcome = {
+  status: "launched" | "clipboard_fallback";
+  method?: string;
+  note?: string;
+  command?: string;        // debug (what rust tried)
+  consoleCmd: string;      // always
+  steamUri: string;        // for debug
+};
+Und dann:
+
+ts
+Kopieren
+const result = await tauriLaunchCS2(cs2Path, playdemoArg);
+return {
+  status: result.status,
+  method: result.method,
+  note: result.note,
+  command: result.command,
+  consoleCmd,
+  steamUri,
+};
+So kann DemoCard sehr klar anzeigen “Methode: steam_exe_applaunch” vs “steam_uri_open”.
+
+Patch D: DemoCard — CS2 Pfad wirklich prüfen + Debug Panel + UX-Fallback
+Datei: artifacts/cs2-demo-manager/src/components/DemoCard.tsx
+
+Heute ist die “CS2 gefunden?”‑Logik extrem permissiv (getCS2Status basiert effektiv auf .endsWith(".exe")). 
+
+Minimal-Patch:
+
+Vor Launch: await verifyCS2PathExists(settings.cs2Path) nutzen (die Funktion existiert im Service bereits). 
+Nach Launch: Debug‑Infos in UI zeigen (nur in DEV oder via Toggle).
+Konkreter Codeblock (Konzept):
+
+ts
+Kopieren
+// new state
+const [lastOutcome, setLastOutcome] = useState<LaunchOutcome | null>(null);
+const [showDebug, setShowDebug] = useState(false);
+
+async function handleLaunch() {
+  // 1) verify path exists (Tauri: filesystem check)
+  const exists = await verifyCS2PathExists(settings.cs2Path);
+  if (!exists) {
+    setStatus({ type: "error", message: "CS2-Pfad ist ungültig (cs2.exe nicht gefunden). Bitte Einstellungen prüfen." });
+    return;
+  }
+
+  // 2) copy command first (unchanged), then launch
+  const outcome = await launchDemoInCS2(demo.filename, settings.cs2Path); // now returns LaunchOutcome
+  setLastOutcome(outcome);
+
+  // 3) keep guide always (fine), but message uses outcome.method/note
+  setStatus({
+    type: "info",
+    message: outcome.status === "launched"
+      ? (outcome.note ?? "CS2 Startversuch ausgelöst. Öffne ~ und füge den kopierten Befehl ein.")
+      : "Befehl kopiert. Starte CS2 und öffne die Konsole mit ~."
+  });
+
+  setShowGuide(true);
+}
+Debug Panel (temporary)
+
+Ein kleines <details> oder Modal am Ende der Card:
+tsx
+Kopieren
+<button onClick={() => setShowDebug(v => !v)} className="text-xs text-white/40">
+  Debug
+</button>
+
+{showDebug && lastOutcome && (
+  <pre className="mt-2 text-[10px] text-white/60 bg-black/40 p-2 rounded">
+{JSON.stringify({
+  isTauri: isTauri(),
+  cs2Path: settings.cs2Path,
+  demo: demo.filename,
+  playdemoArg,
+  consoleCmd,
+  outcome: lastOutcome
+}, null, 2)}
+  </pre>
+)}
+Damit seht ihr sofort, ob ihr z.B. ständig in steam_uri_open landet statt steam_exe_applaunch.
+
+Replit Prompt für euren Developer
+text
+Kopieren
+You are working on https://github.com/ArdianHajdini/Asset-Manager-1 (artifacts/cs2-demo-manager).
+Goal: Fix the broken “In CS2 öffnen” button so it reliably opens CS2 and *attempts* to start the demo, with strong fallbacks.
+
+Please do the following (Windows-first):
+
+1) Backend (Rust, src-tauri/src/lib.rs):
+   - Update LaunchResult to include optional fields: method + note (keep status + command).
+   - In commands::launch_cs2:
+     a) Resolve steam.exe from Windows registry HKLM\SOFTWARE\WOW6432Node\Valve\Steam InstallPath (steam.exe must exist). Do NOT derive steam.exe from cs2.exe.
+     b) PRIMARY: spawn steam.exe -applaunch 730 +playdemo <playdemo_arg>.
+     c) FALLBACK1: open CS2 via cmd /C start "" "steam://rungameid/730" (NO +playdemo).
+     d) FALLBACK2: direct spawn cs2.exe +playdemo <playdemo_arg> BUT set current_dir to .../game/csgo so relative replays/ works.
+     e) If everything fails: return clipboard_fallback with console command.
+   - Add eprintln! logs for each branch including which method was used.
+
+2) Frontend:
+   - Update src/services/tauriBridge.ts TauriLaunchResult interface to include method/note.
+   - Update src/services/cs2Service.ts so launchDemoInCS2 returns a structured LaunchOutcome (status/method/note/command + consoleCmd + steamUri).
+   - Update src/components/DemoCard.tsx:
+     a) Verify cs2Path exists using verifyCS2PathExists before launching.
+     b) Store lastOutcome in state and add a temporary Debug panel showing isTauri, cs2Path, playdemoArg, consoleCmd, outcome.method/note/command.
+
+3) Test on Windows:
+   - Test 2 scenarios:
+     i) CS2 installed in default Steam folder (same drive as steam.exe).
+     ii) CS2 installed in a secondary Steam library (e.g., D:\SteamLibrary\... with steam.exe still in C:\Program Files (x86)\Steam).
+   - For each scenario click “In CS2 öffnen” and confirm:
+     - CS2 opens.
+     - If demo does not auto-start, the clipboard command works when pasted.
+   - Capture logs from Rust (stdout/stderr) and also browser console logs from the Debug panel.
+
+4) Commit:
+   - Provide a single commit with message “Fix CS2 launch: registry steam.exe + robust fallbacks + debug panel”.
+   - Report back with: git diff summary, the logs, and whether each scenario worked.
+
+Important: Do not remove the semi-automatic guide; improve it with better status/method feedback.
+Risikoanalyse und erwartetes Verhalten nach dem Fix
+Verbleibende Failure Modes
+Steam läuft als Admin, App nicht: Kann Prozessstart/IPC beeinflussen (unterschiedliche Privilegien/Session). Mit “best effort” + Guide bleibt UX trotzdem funktionsfähig. (Kein perfekter Fix ohne mehr OS‑Handling.)
+Nicht-ASCII Demo‑Namen / Spaces: steam.exe -applaunch … ist relativ robust (Args sind separate Strings), aber CS2 kann mit exotischen Filenamen trotzdem zicken. Mit Clipboard‑Fallback wird es abfangbar.
+Steam protocol handler kaputt / Steam nicht installiert: cmd start steam://… kann “erfolgreich” spawnen, aber nichts öffnen. Deshalb ist Debug‑Panel + klare Note wichtig. 
+CS2 ignoriert gewisse +command Launch‑Optionen: Dokumentiert (z.B. +connect_hltv via Steam‑Protocol). Mit steam.exe -applaunch sinkt dieses Risiko, aber es ist nicht 100% ausgeschlossen. 
+Deliverables
+Datei	Änderung	Zweck	Erwartetes Laufzeitverhalten
+src-tauri/src/lib.rs	Steam.exe via Registry finden, FALLBACK1 nur “open game”, direct cs2 mit current_dir, Result method/note	Fix für Multi‑Library Installationen; zuverlässiger Primary Launch; reproduzierbares Debugging	Button öffnet CS2 deutlich häufiger “wirklich”; Demo startet wenn möglich automatisch, sonst Guide/Clipboard
+src/services/tauriBridge.ts	TauriLaunchResult erweitert	Frontend kann Launchmethode anzeigen	Debug/UX zeigt “steam_exe_applaunch” vs “steam_uri_open”
+src/services/cs2Service.ts	Strukturierter Return (LaunchOutcome)	Keine Informationsverluste, bessere UI‑Entscheide	UI kann korrekte Hinweise geben; weniger “false launched”
+src/components/DemoCard.tsx	verifyCS2PathExists, Debug Panel, Statusmessage mit Note	Verhindert Launch mit falschem cs2Path; macht Ursachen sichtbar	Keine “silent fails”; Dev sieht sofort, warum es nicht startet
+
+Umsetzungsschritte
+Rust launch_cs2 refactor + zusätzliche Result-Felder
+Frontend Typen & Service‑Return auf LaunchOutcome umstellen
+DemoCard: CS2‑Pfad verifizieren + Debug Panel (temporär)
+Windows Tests (default library + secondary library) inkl. Logs sammeln
+Debug Panel optional hinter DEV‑Flag verstecken oder per Setting togglebar lassen
