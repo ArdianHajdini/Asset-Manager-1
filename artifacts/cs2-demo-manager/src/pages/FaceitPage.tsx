@@ -85,8 +85,8 @@ export function FaceitPage() {
     setConnecting(true);
     setConnectError(null);
     try {
-      // Tauri: opens system browser and awaits the callback (~async)
-      // Browser: redirects the page away — this code never returns
+      // In Tauri: opens system browser and waits for the callback (~async)
+      // In browser: redirects the page — this code never returns
       const conn = await startOAuthFlow();
       setConnection(conn);
       if (conn.steamId) {
@@ -136,10 +136,13 @@ export function FaceitPage() {
                 Der Browser wurde geöffnet — melde dich bei FACEIT an und kehre dann zur App zurück.
               </p>
             )}
-            {connectError && !showApiKeyForm && (
-              <div className="mb-3 flex items-start gap-2 p-3 rounded-lg bg-red-900/25 border border-red-700/35">
-                <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                <p className="text-red-300/90 text-xs">{connectError}</p>
+            {!connecting && (
+              <div className="mb-3 flex items-start gap-2 p-3 rounded-xl border border-white/6 bg-white/2">
+                <Info className="w-3 h-3 text-white/25 shrink-0 mt-0.5" />
+                <p className="text-white/30 text-xs leading-relaxed">
+                  Im FACEIT Developer Portal folgende Redirect URI eintragen:{" "}
+                  <code className="text-white/55 font-mono">http://127.0.0.1:14523/callback</code>
+                </p>
               </div>
             )}
           </>
@@ -154,6 +157,14 @@ export function FaceitPage() {
                 die <code className="text-yellow-300">faceit-integration-plan.md</code> für Setup-Anweisungen.
               </p>
             </div>
+          </div>
+        )}
+
+        {/* OAuth error (shown outside the API key form when OAuth fails) */}
+        {connectError && !showApiKeyForm && (
+          <div className="mb-3 flex items-start gap-2 p-3 rounded-lg bg-red-900/25 border border-red-700/35">
+            <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            <p className="text-red-300/90 text-xs">{connectError}</p>
           </div>
         )}
 

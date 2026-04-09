@@ -1509,9 +1509,9 @@ pub mod commands {
     // sends a friendly HTML close-page to the browser, and emits a Tauri
     // event `faceit-oauth-callback` so the frontend can complete the flow.
     //
-    // RFC 8252 §7.3 defines the loopback redirect as the recommended approach
-    // for native apps. Most OAuth providers (including FACEIT) accept
-    // http://127.0.0.1 with any port as a valid redirect URI.
+    // This avoids the need for a custom URI scheme (deep links) while still
+    // handling the callback outside the Tauri webview. RFC 8252 §7.3 defines
+    // this as the recommended approach for native apps.
 
     #[tauri::command]
     pub async fn start_oauth_listener(app: tauri::AppHandle) -> Result<u16, String> {
@@ -1519,9 +1519,11 @@ pub mod commands {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
-        let listener = TcpListener::bind("127.0.0.1:0")
+        // Fixed port so the redirect URI is predictable and can be registered
+        // in the FACEIT developer portal as http://127.0.0.1:14523/callback
+        let listener = TcpListener::bind("127.0.0.1:14523")
             .await
-            .map_err(|e| format!("Konnte keinen freien Port binden: {}", e))?;
+            .map_err(|e| format!("OAuth-Port 14523 konnte nicht gebunden werden: {}", e))?;
 
         let port = listener
             .local_addr()
@@ -1529,17 +1531,16 @@ pub mod commands {
             .port();
 
         tokio::spawn(async move {
-            // Accept exactly one connection — the browser redirect
+            // Accept exactly one connection (the browser redirect)
             let payload = match listener.accept().await {
-                Err(e) => {
-                    serde_json::json!({ "code": "", "state": "", "error": e.to_string() })
-                }
+                Err(e) => serde_json::json!({ "code": "", "state": "", "error": e.to_string() }),
                 Ok((mut stream, _)) => {
+                    // Read the HTTP request
                     let mut buf = vec![0u8; 8192];
                     let n = stream.read(&mut buf).await.unwrap_or(0);
                     let request = String::from_utf8_lossy(&buf[..n]);
 
-                    // Parse: GET /callback?code=...&state=... HTTP/1.1
+                    // First line: GET /callback?code=...&state=... HTTP/1.1
                     let query_str = request
                         .lines()
                         .next()
@@ -1553,7 +1554,8 @@ pub mod commands {
 
                     for pair in query_str.split('&') {
                         if let Some((k, v)) = pair.split_once('=') {
-                            let decoded = oauth_percent_decode(v);
+                            // Minimal percent-decode: replace %XX sequences
+                            let decoded = percent_decode(v);
                             match k {
                                 "code" => code = decoded,
                                 "state" => state = decoded,
@@ -1564,27 +1566,28 @@ pub mod commands {
                         }
                     }
 
+                    // Reply to the browser so the tab shows a friendly message
                     let success = error.is_empty() && !code.is_empty();
                     let body = if success {
                         "<!DOCTYPE html><html><head><meta charset='utf-8'><title>CS2 Demo Manager</title>\
                         <style>body{font-family:sans-serif;background:#0d1117;color:#ccc;display:flex;\
                         align-items:center;justify-content:center;min-height:100vh;margin:0}\
-                        .box{text-align:center}</style></head><body>\
-                        <div class='box'>\
-                        <div style='font-size:3rem'>✓</div>\
-                        <div style='color:#FF5500;font-size:1.4rem;margin:.5rem 0'>Erfolgreich angemeldet!</div>\
-                        <div style='color:#888;font-size:.9rem'>Du kannst dieses Fenster jetzt schließen.</div>\
-                        </div><script>setTimeout(()=>window.close(),2000)</script></body></html>"
+                        .box{text-align:center}.icon{font-size:3rem}.title{color:#FF5500;font-size:1.4rem;\
+                        margin:.5rem 0}.sub{color:#888;font-size:.9rem}</style></head><body>\
+                        <div class='box'><div class='icon'>✓</div>\
+                        <div class='title'>Erfolgreich angemeldet!</div>\
+                        <div class='sub'>Du kannst dieses Fenster jetzt schließen.</div></div>\
+                        <script>setTimeout(()=>window.close(),2000)</script></body></html>"
                     } else {
                         "<!DOCTYPE html><html><head><meta charset='utf-8'><title>CS2 Demo Manager</title>\
                         <style>body{font-family:sans-serif;background:#0d1117;color:#ccc;display:flex;\
                         align-items:center;justify-content:center;min-height:100vh;margin:0}\
-                        .box{text-align:center}</style></head><body>\
-                        <div class='box'>\
-                        <div style='font-size:3rem'>✗</div>\
-                        <div style='color:#e55;font-size:1.4rem;margin:.5rem 0'>Anmeldung fehlgeschlagen</div>\
-                        <div style='color:#888;font-size:.9rem'>Bitte schließe dieses Fenster und versuche es erneut.</div>\
-                        </div></body></html>"
+                        .box{text-align:center}.icon{font-size:3rem}.title{color:#e55;font-size:1.4rem;\
+                        margin:.5rem 0}.sub{color:#888;font-size:.9rem}</style></head><body>\
+                        <div class='box'><div class='icon'>✗</div>\
+                        <div class='title'>Anmeldung fehlgeschlagen</div>\
+                        <div class='sub'>Bitte schließe dieses Fenster und versuche es erneut.</div></div>\
+                        </body></html>"
                     };
 
                     let response = format!(
@@ -1609,8 +1612,8 @@ pub mod commands {
         Ok(port)
     }
 
-    /// Minimal percent-decoder: handles `%XX` sequences and `+` → space.
-    fn oauth_percent_decode(s: &str) -> String {
+    /// Minimal percent-decoder: replaces `%XX` sequences and `+` → space.
+    fn percent_decode(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         let bytes = s.as_bytes();
         let mut i = 0;
