@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import {
-  Download, Play, FolderOpen, Loader2, CheckCircle2, AlertCircle,
-  Calendar, Map, Trophy, Copy, Check, Users, Volume2, Info,
+  Play, FolderOpen, Loader2, CheckCircle2,
+  Calendar, Map, Copy, Check, Users, Volume2, Info, ExternalLink,
 } from "lucide-react";
 import type { FaceitHistoryItem } from "../types/faceit";
 import { useFaceit } from "../context/FaceitContext";
@@ -11,7 +11,7 @@ import {
   formatMatchDate, getScoreString, getMatchDetails,
 } from "../services/faceitMatchService";
 import {
-  resolveDemoUrl, downloadFaceitDemo, demoDisplayName, findDownloadedDemo,
+  findDownloadedDemo, faceitMatchUrl,
 } from "../services/faceitDownloadService";
 import {
   buildPlaydemoArg,
@@ -43,14 +43,14 @@ interface MatchCardProps {
 }
 
 export function MatchCard({ match }: MatchCardProps) {
-  const { connection, downloadStates, setDownloadState } = useFaceit();
-  const { settings, setStatus, refreshDemos } = useApp();
+  const { connection } = useFaceit();
+  const { settings, setStatus } = useApp();
   const [, navigate] = useLocation();
 
-  // Demo/details state
-  const [demoUrlChecked, setDemoUrlChecked] = useState(false);
-  const [hasDemoUrl, setHasDemoUrl] = useState<boolean | null>(null);
+  // Match details fetched lazily on hover (map name, demo availability on FACEIT)
   const [mapName, setMapName] = useState<string | null>(null);
+  const [hasDemoOnFaceit, setHasDemoOnFaceit] = useState<boolean | null>(null);
+  const [detailsChecked, setDetailsChecked] = useState(false);
 
   // Voice mode for copy-command
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("all");
@@ -62,7 +62,7 @@ export function MatchCard({ match }: MatchCardProps) {
   const [parsedPlayers, setParsedPlayers] = useState<TauriDemoPlayer[] | null>(null);
   const [parsing, setParsing] = useState(false);
 
-  // Auto-parse on mount if this demo was already downloaded in a previous session
+  // Auto-parse on mount if this demo was already processed in a previous session
   useEffect(() => {
     if (!isTauri()) return;
     const existingDemo = findDownloadedDemo(match.match_id);
@@ -83,17 +83,17 @@ export function MatchCard({ match }: MatchCardProps) {
   const score = getScoreString(match, playerId);
   const dateStr = formatMatchDate(match.started_at);
 
-  const dlState = downloadStates[match.match_id] ?? { status: "idle" };
+  // Check if this match's demo is already in the local library
   const existingDemo = findDownloadedDemo(match.match_id);
-  const isAlreadyDownloaded = dlState.status === "done" || existingDemo !== null;
+  const isAlreadyProcessed = existingDemo !== null;
 
-  // Build playdemo arg from downloaded demo file
-  const downloadedDemo = existingDemo;
-  const playdemoArg = downloadedDemo
-    ? buildPlaydemoArg(downloadedDemo.filename)
-    : dlState.demoPath
-      ? buildPlaydemoArg(dlState.demoPath.split(/[\\/]/).pop() ?? "")
-      : null;
+  // URL to open on FACEIT (match page where the user can download the demo manually)
+  const matchUrl = faceitMatchUrl(match.match_id, match.faceit_url);
+
+  // Build playdemo arg from already-processed demo file
+  const playdemoArg = existingDemo
+    ? buildPlaydemoArg(existingDemo.filename)
+    : null;
 
   // Computed rosters from parsed .dem players — team split uses m_iTeamNum from demo only
   const rosters: DemoRosters | null = parsedPlayers ? buildRosters(parsedPlayers) : null;
@@ -117,106 +117,27 @@ export function MatchCard({ match }: MatchCardProps) {
     ? buildFullPlayCommand(playdemoArg, voiceMode, playersToHear)
     : null;
 
-  // ── Lazy-load demo details (map, availability) ───────────────────────────
-  async function checkDemoAvailability() {
-    if (demoUrlChecked || !connection) return;
+  // ── Lazy-load match details (map name, demo availability on FACEIT) ────────
+  async function checkMatchDetails() {
+    if (detailsChecked || !connection) return;
     try {
       const details = await getMatchDetails(match.match_id, connection);
-      setHasDemoUrl(!!(details.demo_url && details.demo_url.length > 0));
+      setHasDemoOnFaceit(!!(details.demo_url && details.demo_url.length > 0));
       const rawMap = details.voting?.map?.pick?.[0] ?? null;
       if (rawMap) setMapName(prettyMapName(rawMap));
     } catch {
-      setHasDemoUrl(false);
+      setHasDemoOnFaceit(false);
     } finally {
-      setDemoUrlChecked(true);
+      setDetailsChecked(true);
     }
   }
 
-  // ── Download demo ────────────────────────────────────────────────────────
-  async function handleDownload() {
-    if (!connection) return;
-
-    if (isTauri() && !settings.demoDirectory) {
-      setStatus({
-        type: "error",
-        message: "Kein CS2 Replay-Ordner konfiguriert. Bitte CS2 in den Einstellungen automatisch erkennen lassen.",
-      });
-      return;
-    }
-
-    setDownloadState(match.match_id, { status: "downloading", progress: 0 });
-    try {
-      const details = await getMatchDetails(match.match_id, connection);
-
-      // Extract map name while we have the details
-      const rawMap = details.voting?.map?.pick?.[0] ?? null;
-      if (rawMap) setMapName(prettyMapName(rawMap));
-
-      const url = await resolveDemoUrl(match.match_id, connection, details);
-      if (!url) {
-        setDownloadState(match.match_id, {
-          status: "error",
-          error: "Für dieses Match ist keine Demo verfügbar.",
-        });
-        return;
-      }
-
-      const displayName = demoDisplayName(match.match_id, mapName ?? prettyMapName(rawMap));
-      setDownloadState(match.match_id, { status: "downloading", progress: 10 });
-
-      const demo = await downloadFaceitDemo(
-        match.match_id,
-        url,
-        settings.demoDirectory,
-        displayName,
-        (phase, percent) => {
-          setDownloadState(match.match_id, {
-            status: phase === "extracting" ? "extracting" : "downloading",
-            progress: percent,
-          });
-        }
-      );
-
-      if (demo) {
-        setDownloadState(match.match_id, {
-          status: "done",
-          demoPath: demo.filepath,
-          demoId: demo.id,
-        });
-        await refreshDemos();
-        setStatus({
-          type: "success",
-          message: `Demo „${displayName}" wurde im Replay-Ordner gespeichert.`,
-        });
-
-        // Parse entity IDs from the freshly downloaded .dem file
-        if (isTauri() && demo.filepath) {
-          setParsing(true);
-          tauriParseDemoPlayers(demo.filepath)
-            .then((players) => setParsedPlayers(players))
-            .catch(() => setParsedPlayers([]))
-            .finally(() => setParsing(false));
-        }
-      } else {
-        setDownloadState(match.match_id, { status: "done" });
-        setStatus({
-          type: "info",
-          message: "Browser-Download gestartet. Demo muss manuell in den CS2 Replay-Ordner verschoben werden.",
-        });
-      }
-    } catch (err) {
-      setDownloadState(match.match_id, { status: "error", error: String(err) });
-      setStatus({ type: "error", message: String(err) });
-    }
-  }
-
-  // ── Copy command ─────────────────────────────────────────────────────────
+  // ── Copy command ──────────────────────────────────────────────────────────
   async function handleCopyCommand() {
     if (!fullCommand) {
-      // Distinguish: demo not yet downloaded vs. voice filter unavailable
       const msg = playdemoArg
         ? "Sprachfilter für diesen Modus nicht verfügbar — Demo-Daten fehlen."
-        : "Demo wurde noch nicht verarbeitet — bitte zuerst herunterladen.";
+        : "Demo wurde noch nicht verarbeitet — bitte zuerst den Downloads-Ordner scannen.";
       setStatus({ type: "error", message: msg });
       return;
     }
@@ -230,7 +151,7 @@ export function MatchCard({ match }: MatchCardProps) {
 
   // ── Launch CS2 + copy (best effort) ──────────────────────────────────────
   async function handleWatch() {
-    if (!downloadedDemo) return;
+    if (!existingDemo) return;
 
     if (!isTauri()) {
       await handleCopyCommand();
@@ -247,7 +168,7 @@ export function MatchCard({ match }: MatchCardProps) {
         await copyToClipboard(fullCommand);
         setCmdCopied(true);
       }
-      const outcome = await launchDemoInCS2(downloadedDemo.filename, settings.cs2Path);
+      const outcome = await launchDemoInCS2(existingDemo.filename, settings.cs2Path);
       setStatus({
         type: "info",
         message: outcome.status === "launched"
@@ -276,7 +197,7 @@ export function MatchCard({ match }: MatchCardProps) {
     return "text-white/30";
   }
 
-  // ── Styling based on result ───────────────────────────────────────────────
+  // ── Styling based on result ────────────────────────────────────────────────
   const resultColor =
     result === "win" ? "text-green-400" :
     result === "loss" ? "text-red-400" :
@@ -298,7 +219,7 @@ export function MatchCard({ match }: MatchCardProps) {
         "rounded-xl border border-white/8 bg-white/3 hover:bg-white/5 transition-all duration-200 overflow-hidden",
         statusBorder
       )}
-      onMouseEnter={checkDemoAvailability}
+      onMouseEnter={checkMatchDetails}
     >
       <div className="p-4">
 
@@ -325,7 +246,7 @@ export function MatchCard({ match }: MatchCardProps) {
           <div className="flex items-center gap-1.5">
             <Map className="w-3 h-3 text-white/30" />
             <span className="text-white/55 text-xs font-mono font-semibold">
-              {mapName ?? (demoUrlChecked ? "–" : match.competition_name)}
+              {mapName ?? (detailsChecked ? "–" : match.competition_name)}
             </span>
           </div>
           <span className="text-white/20 text-xs">{match.match_id.slice(0, 8)}…</span>
@@ -350,32 +271,34 @@ export function MatchCard({ match }: MatchCardProps) {
           </div>
         </div>
 
-        {/* Demo status badges */}
+        {/* Status badges */}
         <div className="flex items-center gap-2 mb-4 flex-wrap">
-          {demoUrlChecked && !isAlreadyDownloaded && (
+          {/* Demo availability on FACEIT — shown before the demo is processed locally */}
+          {detailsChecked && !isAlreadyProcessed && (
             <span className={cn(
               "text-xs px-2 py-0.5 rounded-full border",
-              hasDemoUrl
+              hasDemoOnFaceit
                 ? "border-green-700/40 bg-green-900/20 text-green-400"
                 : "border-white/8 bg-white/3 text-white/25"
             )}>
-              {hasDemoUrl ? "Demo verfügbar" : "Keine Demo"}
+              {hasDemoOnFaceit ? "Demo auf FACEIT verfügbar" : "Keine Demo"}
             </span>
           )}
-          {isAlreadyDownloaded && (
+          {/* Demo is already in the local library */}
+          {isAlreadyProcessed && (
             <span className="flex items-center gap-1 text-xs text-orange-400">
               <CheckCircle2 className="w-3 h-3" />
-              Heruntergeladen
+              Verarbeitet
             </span>
           )}
           {/* Parsing status */}
-          {isAlreadyDownloaded && isTauri() && parsing && (
+          {isAlreadyProcessed && isTauri() && parsing && (
             <span className="flex items-center gap-1 text-xs text-white/30">
               <Loader2 className="w-2.5 h-2.5 animate-spin" />
               Analysiere Demo...
             </span>
           )}
-          {isAlreadyDownloaded && isTauri() && !parsing && parsedPlayers && parsedPlayers.length > 0 && (
+          {isAlreadyProcessed && isTauri() && !parsing && parsedPlayers && parsedPlayers.length > 0 && (
             <span className="flex items-center gap-1 text-xs text-white/30">
               <Users className="w-2.5 h-2.5" />
               {parsedPlayers.length} Spieler erkannt
@@ -383,16 +306,8 @@ export function MatchCard({ match }: MatchCardProps) {
           )}
         </div>
 
-        {/* Download error */}
-        {dlState.status === "error" && dlState.error && (
-          <div className="mb-3 flex items-start gap-2 p-2.5 rounded-lg bg-red-900/20 border border-red-700/30">
-            <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5" />
-            <p className="text-red-300/80 text-xs">{dlState.error}</p>
-          </div>
-        )}
-
-        {/* Voice mode picker — always visible when demo is downloaded */}
-        {isAlreadyDownloaded && (
+        {/* Voice mode picker — visible when demo has been processed locally */}
+        {isAlreadyProcessed && (
           <div className="mb-3 p-3 rounded-lg bg-black/30 border border-white/6">
             <p className="text-white/40 text-xs mb-2 flex items-center gap-1.5">
               <Volume2 className="w-3 h-3" />
@@ -514,9 +429,22 @@ export function MatchCard({ match }: MatchCardProps) {
 
         {/* Action buttons */}
         <div className="flex items-center gap-2 flex-wrap">
-          {isAlreadyDownloaded ? (
+
+          {/* "Auf FACEIT öffnen" — primary action, always visible */}
+          <a
+            href={matchUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 px-3.5 py-2 rounded-lg border border-[#FF5500]/40 bg-[#FF5500]/8 hover:bg-[#FF5500]/18 text-[#FF5500]/80 hover:text-[#FF5500] text-sm font-medium transition-all"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            Auf FACEIT öffnen
+          </a>
+
+          {/* Actions available after the demo has been processed locally */}
+          {isAlreadyProcessed && (
             <>
-              {/* Copy command — primary */}
+              {/* Copy play command */}
               <button
                 onClick={handleCopyCommand}
                 disabled={!fullCommand && !!playdemoArg && (voiceMode === "team_t" || voiceMode === "team_ct")}
@@ -554,51 +482,6 @@ export function MatchCard({ match }: MatchCardProps) {
                 Bibliothek
               </button>
             </>
-          ) : dlState.status === "downloading" || dlState.status === "extracting" ? (
-            <div className="flex items-center gap-3">
-              <Loader2 className="w-4 h-4 text-orange-400 animate-spin" />
-              <div>
-                <p className="text-orange-300 text-xs font-medium">
-                  {dlState.status === "extracting" ? "Wird entpackt..." : "Wird heruntergeladen..."}
-                </p>
-                {dlState.progress !== undefined && (
-                  <div className="w-32 h-1 mt-1 bg-white/10 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-orange-500 transition-all duration-300"
-                      style={{ width: `${dlState.progress}%` }}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            <>
-              {/* Demo not downloaded yet — show download button */}
-              {hasDemoUrl === false ? (
-                <span className="text-white/25 text-xs px-3 py-2">Keine Demo verfügbar</span>
-              ) : (
-                <button
-                  onClick={handleDownload}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg border border-orange-500/50 bg-orange-500/10 hover:bg-orange-500/20 text-orange-300 text-sm font-medium transition-all"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Demo herunterladen
-                </button>
-              )}
-            </>
-          )}
-
-          {/* FACEIT link */}
-          {match.faceit_url && (
-            <a
-              href={match.faceit_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-white/25 hover:text-white/55 hover:bg-white/5 transition-all"
-            >
-              <Trophy className="w-3.5 h-3.5" />
-              FACEIT
-            </a>
           )}
         </div>
       </div>
