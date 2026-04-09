@@ -5,7 +5,7 @@
 // which breaks partial HMR. Force a full page reload on every change.
 /* @refresh reset */
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from "react";
-import type { FaceitConnection, FaceitHistoryItem, MatchDownloadState } from "../types/faceit";
+import type { FaceitConnection, FaceitHistoryItem } from "../types/faceit";
 import { loadConnection, clearConnection } from "../services/faceitAuthService";
 import { getMatchHistory } from "../services/faceitMatchService";
 
@@ -20,16 +20,12 @@ interface FaceitContextValue {
   isLoadingMatches: boolean;
   /** Last error from the FACEIT API. */
   matchError: string | null;
-  /** Per-match download state map (keyed by match_id). */
-  downloadStates: Record<string, MatchDownloadState>;
   /** Set the connection (after login). */
   setConnection: (conn: FaceitConnection | null) => void;
   /** Disconnect and clear stored credentials. */
   disconnect: () => void;
   /** Reload matches from the FACEIT API. */
   refreshMatches: () => Promise<void>;
-  /** Update the download state for a single match. */
-  setDownloadState: (matchId: string, state: MatchDownloadState) => void;
 }
 
 const FaceitContext = createContext<FaceitContextValue | null>(null);
@@ -41,7 +37,6 @@ export function FaceitProvider({ children }: { children: React.ReactNode }) {
   const [matches, setMatches] = useState<FaceitHistoryItem[]>([]);
   const [isLoadingMatches, setIsLoadingMatches] = useState(false);
   const [matchError, setMatchError] = useState<string | null>(null);
-  const [downloadStates, setDownloadStates] = useState<Record<string, MatchDownloadState>>({});
 
   const connectionRef = useRef(connection);
   connectionRef.current = connection;
@@ -57,7 +52,6 @@ export function FaceitProvider({ children }: { children: React.ReactNode }) {
   const disconnect = useCallback(() => {
     clearConnection();
     setConnection(null);
-    setDownloadStates({});
   }, [setConnection]);
 
   const refreshMatches = useCallback(async () => {
@@ -83,10 +77,6 @@ export function FaceitProvider({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connection?.playerId]);
 
-  const setDownloadState = useCallback((matchId: string, state: MatchDownloadState) => {
-    setDownloadStates((prev) => ({ ...prev, [matchId]: state }));
-  }, []);
-
   return (
     <FaceitContext.Provider
       value={{
@@ -95,11 +85,9 @@ export function FaceitProvider({ children }: { children: React.ReactNode }) {
         matches,
         isLoadingMatches,
         matchError,
-        downloadStates,
         setConnection,
         disconnect,
         refreshMatches,
-        setDownloadState,
       }}
     >
       {children}
