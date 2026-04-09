@@ -20,6 +20,8 @@ import {
   buildFullPlayCommand,
   buildRosters,
   getPlayersForMode,
+  getPlayersToMute,
+  hasEntityIds,
   type DemoRosters,
 } from "../services/voiceService";
 import { isTauri, tauriParseDemoPlayers, type TauriDemoPlayer } from "../services/tauriBridge";
@@ -57,12 +59,25 @@ export function DemoCard({ demo }: DemoCardProps) {
 
   const cs2Status = getCS2Status(settings.cs2Path);
   const playdemoArg = buildPlaydemoArg(demo.filename);
-  const fullCommand = buildFullPlayCommand(playdemoArg, voiceMode);
 
   // Computed rosters from parsed players
   const rosters: DemoRosters | null = parsedPlayers ? buildRosters(parsedPlayers) : null;
-  // Use the stored Steam ID to correctly determine own/enemy team
-  const playersForMode = getPlayersForMode(voiceMode, rosters, settings.steamId || undefined);
+  const userXuid = settings.steamId || undefined;
+
+  // Players to DISPLAY for the selected mode (own team or enemies)
+  const playersForMode = getPlayersForMode(voiceMode, rosters, userXuid);
+
+  // Players to MUTE for the selected mode — passed to command builder
+  // "own_team" → mute enemies; "enemy" → mute own team
+  const playersToMute = getPlayersToMute(voiceMode, rosters, userXuid);
+
+  // True when automatic voice_mute commands can be generated for this mode
+  const autoMuteAvailable =
+    (voiceMode === "own_team" || voiceMode === "enemy") &&
+    playersToMute !== null &&
+    hasEntityIds(playersToMute);
+
+  const fullCommand = buildFullPlayCommand(playdemoArg, voiceMode, playersToMute);
 
   // ── Parse demo on mount (Tauri only) ─────────────────────────────────────
   useEffect(() => {
@@ -292,14 +307,21 @@ export function DemoCard({ demo }: DemoCardProps) {
           </p>
           <div className="grid grid-cols-4 gap-1">
             {VOICE_OPTIONS.map((opt) => {
-              const hasRosterData = rosters !== null && (opt.mode === "own_team" || opt.mode === "enemy");
+              const needsRoster = opt.mode === "own_team" || opt.mode === "enemy";
+              const hasRoster = needsRoster && rosters !== null;
+              // "auto" = roster + entity IDs → full voice_mute; "list" = roster only; "none" = no data
+              const dotStatus = !needsRoster
+                ? "ok"
+                : autoMuteAvailable && voiceMode === opt.mode
+                  ? "auto"
+                  : hasRoster
+                    ? "list"
+                    : "none";
               return (
                 <button
                   key={opt.mode}
                   onClick={() => setVoiceMode(opt.mode)}
-                  title={hasRosterData
-                    ? `${opt.description} — Spielerliste verfügbar`
-                    : (opt.notImplementedNote ?? opt.description)}
+                  title={opt.description}
                   className={cn(
                     "relative px-2 py-1.5 rounded-lg border text-xs font-medium transition-all duration-150",
                     voiceMode === opt.mode
@@ -308,16 +330,34 @@ export function DemoCard({ demo }: DemoCardProps) {
                   )}
                 >
                   {opt.label}
-                  {!opt.implemented && !hasRosterData && (
-                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-yellow-500/80" />
+                  {dotStatus === "auto" && (
+                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-400" title="Automatische Stummschaltung aktiv" />
                   )}
-                  {hasRosterData && (
-                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-500/80" title="Spielerliste verfügbar" />
+                  {dotStatus === "list" && (
+                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-700/80" title="Spielerliste verfügbar" />
+                  )}
+                  {dotStatus === "none" && needsRoster && (
+                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-white/20" title="Demo noch nicht analysiert" />
                   )}
                 </button>
               );
             })}
           </div>
+
+          {/* Auto-mute status banner */}
+          {(voiceMode === "own_team" || voiceMode === "enemy") && rosters && (
+            <div className={cn(
+              "mt-2 px-2.5 py-1.5 rounded-lg border text-[10px] flex items-center gap-1.5",
+              autoMuteAvailable
+                ? "bg-green-900/20 border-green-700/30 text-green-300/80"
+                : "bg-black/20 border-white/6 text-white/30"
+            )}>
+              <Info className="w-3 h-3 shrink-0" />
+              {autoMuteAvailable
+                ? `${playersToMute?.length ?? 0} Spieler werden automatisch stummgeschaltet — Befehl unten kopieren.`
+                : "Spieler-IDs nicht gefunden — Stummschaltung manuell über das CS2-Scoreboard."}
+            </div>
+          )}
 
           {/* Player list for selected mode */}
           {playersForMode && playersForMode.length > 0 && (
@@ -327,21 +367,13 @@ export function DemoCard({ demo }: DemoCardProps) {
                   <span key={p.xuid} className="flex items-center gap-1 text-[10px]">
                     <span className={cn("font-mono text-[9px] font-bold", teamColor(p.teamNum))}>{teamLabel(p.teamNum)}</span>
                     <span className="text-white/50">{p.name}</span>
+                    {p.entityId !== undefined && (
+                      <span className="text-white/20 font-mono text-[8px]">#{p.entityId}</span>
+                    )}
                   </span>
                 ))}
               </div>
-              <p className="text-white/20 text-[9px] mt-1.5">
-                Tipp: Spieler manuell in CS2 über die Scoreboard-Stummschaltung deaktivieren.
-              </p>
             </div>
-          )}
-
-          {/* Note for unimplemented modes (when no roster data) */}
-          {!rosters && VOICE_OPTIONS.find((o) => o.mode === voiceMode)?.notImplementedNote && (
-            <p className="mt-1.5 text-[10px] text-yellow-400/60 flex items-center gap-1">
-              <Info className="w-3 h-3 shrink-0" />
-              {VOICE_OPTIONS.find((o) => o.mode === voiceMode)?.notImplementedNote}
-            </p>
           )}
         </div>
 
