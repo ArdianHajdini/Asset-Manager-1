@@ -163,9 +163,10 @@ export interface TauriDemoPlayer {
   teamNum: number;
   isHltv: boolean;
   /**
-   * voice_mute slot index from the demo's userinfo string table.
-   * Present when the CDemoStringTables packet was successfully parsed.
-   * Pass this value directly to CS2's `voice_mute <entityId>` console command.
+   * Player slot index from the demo's "userinfo" CDemoStringTables packet.
+   * Present when parsing succeeded. This value is both:
+   *   - The bit position in `tv_listen_voice_indices <bitmask>` (preferred)
+   *   - The argument to `voice_mute <slot>` (legacy)
    * Absent when the slot could not be determined (fall back to player-list display).
    */
   entityId?: number;
