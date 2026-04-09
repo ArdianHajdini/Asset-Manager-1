@@ -2,20 +2,26 @@
  * voiceService.ts — CS2 voice mode selection and command generation.
  *
  * Modes:
- *   "all"       → voice_enable 1                              (always implemented)
- *   "none"      → voice_enable 0                              (always implemented)
- *   "own_team"  → voice_mute <slot>... for every enemy        (needs entityId in roster)
- *   "enemy"     → voice_mute <slot>... for every own player   (needs entityId in roster)
+ *   "all"       → voice_enable 1                                    (always)
+ *   "none"      → voice_enable 0                                    (always)
+ *   "own_team"  → tv_listen_voice_indices <bitmask of own-team slots>
+ *   "enemy"     → tv_listen_voice_indices <bitmask of enemy slots>
  *
- * voice_mute slot numbers come from the CDemoStringTables "userinfo" string table
- * inside the .dem file. The Rust parser extracts them and exposes them as
- * TauriDemoPlayer.entityId (optional — absent when parsing failed).
+ * Player slot numbers (entityId) come from the CDemoStringTables "userinfo"
+ * string table inside the .dem file. The Rust parser extracts them and
+ * exposes them as TauriDemoPlayer.entityId (optional — absent when parsing
+ * failed).
+ *
+ * tv_listen_voice_indices takes a bitmask where bit N = hear player at slot N.
+ * This is a positive selection: you specify exactly who you want to HEAR.
  *
  * When entityId values are present the generated command looks like:
- *   voice_mute 2; voice_mute 5; voice_mute 7; playdemo replays/matchname
+ *   tv_listen_voice_indices 164; playdemo replays/matchname
+ *   (164 = (1<<2)|(1<<5)|(1<<7) — slots 2, 5 and 7 are heard)
  *
  * When entityId values are absent the mode still shows the correct player list
- * (name / team) so the user can mute manually via the CS2 scoreboard.
+ * (name / team) so the user can mute manually via the CS2 scoreboard, and the
+ * fallback command is simply voice_enable 1; playdemo ...
  */
 
 import type { TauriDemoPlayer } from "./tauriBridge";
@@ -120,12 +126,15 @@ export function getPlayersForMode(
 }
 
 /**
- * Return the players that should be MUTED for a given voice mode.
- * - "own_team" → mute enemies so only your team is heard
- * - "enemy"    → mute your team so only the enemies are heard
- * Returns null for "all" / "none" (no per-player muting needed).
+ * Return the players that the user WANTS TO HEAR for a given voice mode.
+ * - "own_team" → hear your own team (enemies are silenced)
+ * - "enemy"    → hear the enemies (own team is silenced)
+ * Returns null for "all" / "none" (no per-player selection needed).
+ *
+ * The returned players' entityId values are used to build the
+ * tv_listen_voice_indices bitmask.
  */
-export function getPlayersToMute(
+export function getPlayersToHear(
   mode: VoiceMode,
   rosters: DemoRosters | null,
   userXuid?: string
@@ -133,8 +142,8 @@ export function getPlayersToMute(
   if (!rosters) return null;
   const { ownTeam, enemyTeam } = splitTeams(rosters, userXuid);
   switch (mode) {
-    case "own_team": return enemyTeam;   // mute enemies
-    case "enemy":    return ownTeam;     // mute own team
+    case "own_team": return ownTeam;    // hear own team
+    case "enemy":    return enemyTeam;  // hear enemies
     default:         return null;
   }
 }
@@ -143,10 +152,19 @@ export function getPlayersToMute(
 
 /**
  * Returns true when every player in the array has a known entityId.
- * Used to decide whether automatic voice_mute commands can be generated.
+ * Used to decide whether tv_listen_voice_indices can be generated.
  */
 export function hasEntityIds(players: TauriDemoPlayer[]): boolean {
   return players.length > 0 && players.every((p) => p.entityId !== undefined);
+}
+
+/**
+ * Compute the tv_listen_voice_indices bitmask for the given players.
+ * Bit N is set when the player at slot N should be heard.
+ * Example: slots [2, 5, 7] → (1<<2)|(1<<5)|(1<<7) = 164
+ */
+export function buildVoiceIndexBitmask(players: TauriDemoPlayer[]): number {
+  return players.reduce((acc, p) => acc | (1 << (p.entityId as number)), 0);
 }
 
 // ── Command builder ─────────────────────────────────────────────────────────
@@ -154,20 +172,21 @@ export function hasEntityIds(players: TauriDemoPlayer[]): boolean {
 /**
  * Build the CS2 console voice-setup commands for the selected mode.
  *
- * @param mode          - Voice mode selected by the user.
- * @param playersToMute - Players whose voices should be muted (the "other side").
- *                        When all players have entityId, real voice_mute commands
- *                        are generated. Otherwise falls back to voice_enable 1.
+ * @param mode           - Voice mode selected by the user.
+ * @param playersToHear  - Players the user wants to HEAR (their own side).
+ *                         When all players have entityId, tv_listen_voice_indices
+ *                         is generated with the correct bitmask.
+ *                         Falls back to voice_enable 1 when IDs are absent.
  *
  * Examples:
- *   "none"      → "voice_enable 0"
- *   "all"       → "voice_enable 1"
- *   "own_team" with entity IDs → "voice_enable 1; voice_mute 2; voice_mute 7"
- *   "own_team" without IDs     → "voice_enable 1"
+ *   "none"                               → "voice_enable 0"
+ *   "all"                                → "voice_enable 1"
+ *   "own_team" with entity IDs (2,5,7)   → "tv_listen_voice_indices 164"
+ *   "own_team" without IDs               → "voice_enable 1"
  */
 export function buildVoiceCommands(
   mode: VoiceMode,
-  playersToMute?: TauriDemoPlayer[] | null
+  playersToHear?: TauriDemoPlayer[] | null
 ): string {
   switch (mode) {
     case "none":
@@ -178,12 +197,9 @@ export function buildVoiceCommands(
 
     case "own_team":
     case "enemy": {
-      const base = "voice_enable 1";
-      if (!playersToMute || !hasEntityIds(playersToMute)) return base;
-      const muteCmds = playersToMute
-        .map((p) => `voice_mute ${p.entityId}`)
-        .join("; ");
-      return `${base}; ${muteCmds}`;
+      if (!playersToHear || !hasEntityIds(playersToHear)) return "voice_enable 1";
+      const bitmask = buildVoiceIndexBitmask(playersToHear);
+      return `tv_listen_voice_indices ${bitmask}`;
     }
   }
 }
@@ -195,9 +211,9 @@ export function buildVoiceCommands(
 export function buildFullPlayCommand(
   playdemoArg: string,
   voiceMode: VoiceMode,
-  playersToMute?: TauriDemoPlayer[] | null
+  playersToHear?: TauriDemoPlayer[] | null
 ): string {
-  const voiceCmd = buildVoiceCommands(voiceMode, playersToMute);
+  const voiceCmd = buildVoiceCommands(voiceMode, playersToHear);
   return `${voiceCmd}; playdemo ${playdemoArg}`;
 }
 
