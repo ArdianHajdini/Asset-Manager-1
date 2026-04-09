@@ -82,10 +82,20 @@ export function FaceitPage() {
   }
 
   async function handleOAuthConnect() {
+    setConnecting(true);
+    setConnectError(null);
     try {
-      await startOAuthFlow();
+      // In Tauri: opens system browser and waits for the callback (~async)
+      // In browser: redirects the page — this code never returns
+      const conn = await startOAuthFlow();
+      setConnection(conn);
+      if (conn.steamId) {
+        updateSettings({ steamId: conn.steamId });
+      }
     } catch (err) {
       setConnectError(String(err));
+    } finally {
+      setConnecting(false);
     }
   }
 
@@ -108,13 +118,25 @@ export function FaceitPage() {
 
         {/* OAuth button (if CLIENT_ID is configured) */}
         {FACEIT_CLIENT_ID ? (
-          <button
-            onClick={handleOAuthConnect}
-            className="w-full flex items-center justify-center gap-3 py-3.5 rounded-xl font-semibold text-sm bg-[#FF5500] hover:bg-[#ff6620] active:bg-[#e64d00] text-white transition-all duration-150 mb-4"
-          >
-            <Shield className="w-4 h-4" />
-            Mit FACEIT anmelden (OAuth)
-          </button>
+          <>
+            <button
+              onClick={handleOAuthConnect}
+              disabled={connecting}
+              className="w-full flex items-center justify-center gap-3 py-3.5 rounded-xl font-semibold text-sm bg-[#FF5500] hover:bg-[#ff6620] active:bg-[#e64d00] text-white transition-all duration-150 mb-2 disabled:opacity-60 disabled:cursor-wait"
+            >
+              {connecting
+                ? <Loader2 className="w-4 h-4 animate-spin" />
+                : <Shield className="w-4 h-4" />}
+              {connecting
+                ? (isTauri() ? "Warte auf Browser…" : "Verbinde…")
+                : "Mit FACEIT anmelden (OAuth)"}
+            </button>
+            {connecting && isTauri() && (
+              <p className="text-white/35 text-xs text-center mb-4">
+                Der Browser wurde geöffnet. Melde dich bei FACEIT an und kehre dann zur App zurück.
+              </p>
+            )}
+          </>
         ) : (
           <div className="mb-4 flex items-start gap-3 p-4 rounded-xl border border-yellow-700/30 bg-yellow-900/15">
             <Info className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
@@ -126,6 +148,14 @@ export function FaceitPage() {
                 die <code className="text-yellow-300">faceit-integration-plan.md</code> für Setup-Anweisungen.
               </p>
             </div>
+          </div>
+        )}
+
+        {/* OAuth error (shown outside the API key form when OAuth fails) */}
+        {connectError && !showApiKeyForm && (
+          <div className="mb-3 flex items-start gap-2 p-3 rounded-lg bg-red-900/25 border border-red-700/35">
+            <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            <p className="text-red-300/90 text-xs">{connectError}</p>
           </div>
         )}
 
