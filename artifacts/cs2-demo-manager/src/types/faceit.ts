@@ -140,19 +140,3 @@ export interface FaceitConnection {
   /** ISO string when connection was established */
   connectedAt: string;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Per-match download state tracked in the UI
-// ─────────────────────────────────────────────────────────────────────────────
-
-export type DownloadStatus = "idle" | "downloading" | "extracting" | "done" | "error";
-
-export interface MatchDownloadState {
-  status: DownloadStatus;
-  progress?: number; // 0–100
-  error?: string;
-  /** Absolute path to the saved .dem file (after successful download) */
-  demoPath?: string;
-  /** Demo ID in the local library (after registration) */
-  demoId?: string;
-}
