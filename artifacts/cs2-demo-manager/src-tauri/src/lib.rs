@@ -894,8 +894,19 @@ pub mod commands {
     /// Returns a `Vec<DemoPlayer>` where every player has:
     ///   - `entity_id`  = `entity.index()` (the 0-based voice_mute slot directly)
     ///   - `team_num`   = 2 (T) or 3 (CT) from the entity's final state
-    ///   - `xuid`       = SteamID64 string, or "" for FACEIT / bot entries
+    ///   - `xuid`       = SteamID64 string (> 76_561_197_960_265_728), or ""
+    ///                    for FACEIT proxy accounts / bots whose `m_steamID`
+    ///                    is 0 or below the valid SteamID64 minimum.
     ///   - `name`       = display name from `m_iszPlayerName`
+    ///
+    /// SteamID filtering policy:
+    ///   `m_steamID > 76_561_197_960_265_728` → stored as decimal string (xuid).
+    ///   Values outside this range are stored as empty string rather than
+    ///   being filtered out, because voice-slot assignment uses `entity_id`
+    ///   directly and does NOT need a valid xuid. This means FACEIT players and
+    ///   bot entries are kept in the list (they have a valid slot) but their
+    ///   xuid field is empty, so own/enemy team inference using `userXuid`
+    ///   matching will not match them — a deliberate conservative choice.
     ///
     /// Returns `Err` on any parse failure so the caller can fall back to the
     /// CDemoFileInfo + CDemoStringTables path.
