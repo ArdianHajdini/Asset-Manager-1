@@ -20,7 +20,7 @@ import {
   buildFullPlayCommand,
   buildRosters,
   getPlayersForMode,
-  getPlayersToMute,
+  getPlayersToHear,
   hasEntityIds,
   type DemoRosters,
 } from "../services/voiceService";
@@ -67,17 +67,17 @@ export function DemoCard({ demo }: DemoCardProps) {
   // Players to DISPLAY for the selected mode (own team or enemies)
   const playersForMode = getPlayersForMode(voiceMode, rosters, userXuid);
 
-  // Players to MUTE for the selected mode — passed to command builder
-  // "own_team" → mute enemies; "enemy" → mute own team
-  const playersToMute = getPlayersToMute(voiceMode, rosters, userXuid);
+  // Players the user WANTS TO HEAR for the selected mode — passed to command builder
+  // "own_team" → hear own team (bitmask of their slots); "enemy" → hear enemies
+  const playersToHear = getPlayersToHear(voiceMode, rosters, userXuid);
 
-  // True when automatic voice_mute commands can be generated for this mode
+  // True when tv_listen_voice_indices can be generated for this mode
   const autoMuteAvailable =
     (voiceMode === "own_team" || voiceMode === "enemy") &&
-    playersToMute !== null &&
-    hasEntityIds(playersToMute);
+    playersToHear !== null &&
+    hasEntityIds(playersToHear);
 
-  const fullCommand = buildFullPlayCommand(playdemoArg, voiceMode, playersToMute);
+  const fullCommand = buildFullPlayCommand(playdemoArg, voiceMode, playersToHear);
 
   // ── Parse demo on mount (Tauri only) ─────────────────────────────────────
   useEffect(() => {
@@ -354,7 +354,7 @@ export function DemoCard({ demo }: DemoCardProps) {
             )}>
               <Info className="w-3 h-3 shrink-0" />
               {autoMuteAvailable
-                ? `${playersToMute?.length ?? 0} Spieler werden automatisch stummgeschaltet — Befehl unten kopieren.`
+                ? `${playersToHear?.length ?? 0} Spieler werden automatisch gehört (Gegenseite stumm) — Befehl unten kopieren.`
                 : "Spieler-IDs nicht gefunden — Stummschaltung manuell über das CS2-Scoreboard."}
             </div>
           )}
