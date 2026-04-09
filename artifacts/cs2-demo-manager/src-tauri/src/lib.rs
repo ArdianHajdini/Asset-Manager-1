@@ -813,6 +813,8 @@ pub mod commands {
             /// Steam ID64 as string; empty string when not available (FACEIT).
             pub xuid: String,
             pub name: String,
+            /// 2 = Terrorist, 3 = Counter-Terrorist
+            pub team_num: u32,
         }
 
         /// Collects `CCSPlayerController` entities while the demo is parsed.
@@ -881,95 +883,60 @@ pub mod commands {
 
                 // entity.index() IS the voice_mute slot.
                 self.players
-                    .insert(entity.index(), PlayerEntry { xuid, name });
+                    .insert(entity.index(), PlayerEntry { xuid, name, team_num });
                 Ok(())
             }
         }
     }
 
-    /// Parse voice-slot indices from a CS2 demo using the source2-demo entity
-    /// observer.  Returns `None` on any parse error or when no player entities
-    /// were found, so the caller can fall back to the CDemoStringTables parser.
-    fn find_voice_slots_via_source2(filepath: &str) -> Option<UserInfoMaps> {
+    /// Parse players from a CS2 demo using the source2-demo entity observer.
+    ///
+    /// Returns a `Vec<DemoPlayer>` where every player has:
+    ///   - `entity_id`  = `entity.index()` (the 0-based voice_mute slot directly)
+    ///   - `team_num`   = 2 (T) or 3 (CT) from the entity's final state
+    ///   - `xuid`       = SteamID64 string, or "" for FACEIT / bot entries
+    ///   - `name`       = display name from `m_iszPlayerName`
+    ///
+    /// Returns `Err` on any parse failure so the caller can fall back to the
+    /// CDemoFileInfo + CDemoStringTables path.
+    fn parse_players_via_source2(filepath: &str) -> Result<Vec<super::DemoPlayer>, String> {
         // DemoRunner trait provides .run_to_end(); must be in scope to call it.
         use source2_demo::DemoRunner;
 
-        let file = match fs::File::open(filepath) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("[CS2DM] source2-demo: Datei nicht geöffnet: {}", e);
-                return None;
-            }
-        };
+        let file = fs::File::open(filepath)
+            .map_err(|e| format!("source2-demo: Datei nicht geöffnet: {e}"))?;
 
-        let mut parser = match source2_demo::Parser::from_reader(file) {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("[CS2DM] source2-demo: Parser-Fehler: {}", e);
-                return None;
-            }
-        };
+        let mut parser = source2_demo::Parser::from_reader(file)
+            .map_err(|e| format!("source2-demo: Parser-Fehler: {e}"))?;
 
         let collector = parser.register_observer::<s2::Cs2SlotObserver>();
 
-        if let Err(e) = parser.run_to_end() {
-            eprintln!("[CS2DM] source2-demo: run_to_end Fehler: {}", e);
-            return None;
-        }
+        parser.run_to_end()
+            .map_err(|e| format!("source2-demo: run_to_end Fehler: {e}"))?;
 
-        // Release the borrow scope before further processing.
-        let raw_players: Vec<(u32, String, String)> = {
+        // Collect results while the RefCell borrow is held, then release it.
+        let players: Vec<super::DemoPlayer> = {
             let obs = collector.borrow();
             obs.players
                 .iter()
-                .map(|(&slot, p)| (slot, p.xuid.clone(), p.name.clone()))
+                .map(|(&slot, entry)| super::DemoPlayer {
+                    xuid: entry.xuid.clone(),
+                    name: entry.name.clone(),
+                    team_num: entry.team_num,
+                    is_hltv: false,
+                    entity_id: Some(slot),
+                })
                 .collect()
         };
 
-        // Build xuid→slot (direct) and name→slot (deduplicated fallback) maps.
-        let mut xuid_to_slot: std::collections::HashMap<String, u32> =
-            std::collections::HashMap::new();
-        let mut name_slot_raw: Vec<(String, u32)> = Vec::new();
-
-        for (slot, xuid, name) in &raw_players {
-            if !xuid.is_empty() {
-                xuid_to_slot.insert(xuid.clone(), *slot);
-            }
-            let norm = normalize_name(name);
-            if !norm.is_empty() {
-                name_slot_raw.push((norm, *slot));
-            }
-        }
-
-        // Exclude names that appear more than once (prevent wrong assignment).
-        let mut name_count: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-        for (name, _) in &name_slot_raw {
-            *name_count.entry(name.clone()).or_insert(0) += 1;
-        }
-        let mut name_to_slot: std::collections::HashMap<String, u32> =
-            std::collections::HashMap::new();
-        for (name, slot) in &name_slot_raw {
-            if *name_count.get(name.as_str()).unwrap_or(&0) == 1 {
-                name_to_slot.insert(name.clone(), *slot);
-            }
-        }
-
         eprintln!(
-            "[CS2DM] source2-demo: {} Entitäten → {} xuid-Slots, {} unique-name-Slots",
-            raw_players.len(),
-            xuid_to_slot.len(),
-            name_to_slot.len()
+            "[CS2DM] source2-demo: {} Spieler aus Entities ({} T, {} CT)",
+            players.len(),
+            players.iter().filter(|p| p.team_num == 2).count(),
+            players.iter().filter(|p| p.team_num == 3).count()
         );
 
-        if xuid_to_slot.is_empty() && name_to_slot.is_empty() {
-            return None;
-        }
-
-        Some(UserInfoMaps {
-            xuid_to_slot,
-            name_to_slot,
-        })
+        Ok(players)
     }
 
     // ── Voice-slot parser (CDemoStringTables → userinfo) ──────────────────
@@ -1199,17 +1166,41 @@ pub mod commands {
     /// Returns each real player's Steam ID64, display name, team number,
     /// and voice_mute slot (entityId).
     ///
-    /// Step 1 — player names/teams (CDemoFileInfo):
-    ///   Strategy A: seek to `fileinfo_offset` in the 16-byte header.
-    ///   Strategy B (fallback): scan from the start for DEM_FileInfo (type 4) packets.
+    /// Primary path — source2-demo entity observer:
+    ///   `entity.index()` is the 0-based voice_mute slot.  Works for both regular
+    ///   and FACEIT demos.  Returns the complete player list with slots assigned.
     ///
-    /// Step 2 — voice slots (CDemoStringTables):
-    ///   Scan from the start for a CDemoStringTables (type 29) packet.
-    ///   The "userinfo" string table maps player xuid → voice_mute slot index.
-    ///   Slots are merged into the player list so the frontend can build
-    ///   `voice_mute <slot>` commands automatically.
+    /// Fallback — CDemoFileInfo + CDemoStringTables:
+    ///   Used only when the source2-demo parser fails or returns no players.
+    ///   Step 1: CDemoFileInfo → player names/teams.
+    ///   Step 2: CDemoStringTables "userinfo" → voice_mute slot lookup.
     #[tauri::command]
     pub fn parse_demo_players(filepath: String) -> Result<Vec<super::DemoPlayer>, String> {
+        // ── Primary: source2-demo entity observer ─────────────────────────
+        // entity.index() IS the voice slot. Returns complete player data including
+        // team, xuid (where available), and entity_id in a single pass.
+        match parse_players_via_source2(&filepath) {
+            Ok(players) if !players.is_empty() => {
+                eprintln!(
+                    "[CS2DM] parse_demo_players: {} Spieler via source2-demo",
+                    players.len()
+                );
+                return Ok(players);
+            }
+            Ok(_) => {
+                eprintln!(
+                    "[CS2DM] source2-demo: leer → CDemoFileInfo+CDemoStringTables Fallback"
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[CS2DM] source2-demo Fehler: {} → CDemoFileInfo+CDemoStringTables Fallback",
+                    e
+                );
+            }
+        }
+
+        // ── Fallback: CDemoFileInfo (player names/teams) + CDemoStringTables ──
         let data = fs::read(&filepath)
             .map_err(|e| format!("Demo-Datei konnte nicht gelesen werden: {e}"))?;
 
@@ -1259,22 +1250,14 @@ pub mod commands {
             return Ok(vec![]);
         }
 
-        // ── Step 2: voice slots ───────────────────────────────────────────
-        //
-        // Primary:  source2-demo entity observer → entity.index() IS the slot.
-        //           Works for both regular and FACEIT demos.
-        // Fallback: CDemoStringTables "userinfo" table (fast, early in demo).
+        // ── Step 2: voice slots from CDemoStringTables ────────────────────
         //
         // Merge priority:
         //   A) xuid → slot   (exact SteamID64 match)
         //   B) normalized name → slot  (fallback; skipped for ambiguous names)
         //   C) entityId left undefined (no match found)
 
-        let maps = find_voice_slots_via_source2(&filepath)
-            .unwrap_or_else(|| {
-                eprintln!("[CS2DM] source2-demo lieferte keine Slots — CDemoStringTables Fallback");
-                find_voice_slots(&data)
-            });
+        let maps = find_voice_slots(&data);
         eprintln!(
             "[CS2DM] voice maps: {} xuid-slots, {} unique-name-slots",
             maps.xuid_to_slot.len(), maps.name_to_slot.len()
