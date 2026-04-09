@@ -183,37 +183,6 @@ export async function tauriParseDemoPlayers(filepath: string): Promise<TauriDemo
   return invoke<TauriDemoPlayer[]>("parse_demo_players", { filepath });
 }
 
-// ─────────────────────────────────────────
-//  OAuth helpers
-// ─────────────────────────────────────────
-
-/**
- * Open a URL in the system browser (not in the Tauri webview).
- * Used to launch the FACEIT OAuth authorization page so that the user's
- * browser session and cookies are available and the redirect comes back
- * to our local callback server rather than the webview.
- */
-export async function tauriOpenUrlExternally(url: string): Promise<void> {
-  const invoke = await getInvoke();
-  return invoke("open_url_externally", { url });
-}
-
-/**
- * Open FACEIT's OAuth authorization page in an embedded Tauri window.
- *
- * The window intercepts navigation to https://127.0.0.1:14523/callback,
- * extracts the `code` and `state` query params, emits a
- * `faceit-oauth-callback` Tauri event to the main window, and closes itself.
- * No actual server needs to be running on port 14523.
- *
- * Listen for the result via:
- *   listen("faceit-oauth-callback", ...) from @tauri-apps/api/event
- */
-export async function tauriOpenOAuthWebview(authUrl: string): Promise<void> {
-  const invoke = await getInvoke();
-  return invoke("open_oauth_webview", { authUrl });
-}
-
 /**
  * Convert a TauriDemoEntry to the app's Demo type (adds a placeholder id).
  * The actual id is assigned by the frontend storage layer.

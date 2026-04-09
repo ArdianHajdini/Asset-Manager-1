@@ -1,19 +1,24 @@
 import { useState } from "react";
 import {
   Save, FolderOpen, Crosshair, Info, Search, Loader2, CheckCircle2,
-  RefreshCw, FolderSearch, Download, Shield, Key, WifiOff,
+  RefreshCw, FolderSearch, Download, Key, Globe,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import i18n, { LANGUAGES } from "../i18n/index";
 import { useApp } from "../context/AppContext";
-import { useFaceit } from "../context/FaceitContext";
 import { detectCS2Path, detectReplayFolder } from "../services/cs2Service";
-import { isTauri, tauriOpenFolder } from "../services/tauriBridge";
-import { tauriDetectDownloadsFolder } from "../services/tauriBridge";
+import { isTauri, tauriOpenFolder, tauriDetectDownloadsFolder } from "../services/tauriBridge";
 import { scanDownloadsFolder, processCandidates } from "../services/downloadsService";
+import {
+  getStoredLicense,
+  getLicenseStatus,
+  deactivateLicense,
+} from "../services/licenseService";
 import { cn } from "@/lib/utils";
 
 export function SettingsPage() {
   const { settings, updateSettings, setStatus, refreshDemos } = useApp();
-  const { connection, disconnect } = useFaceit();
+  const { t } = useTranslation();
 
   const [form, setForm] = useState({ ...settings });
   const [saved, setSaved] = useState(false);
@@ -21,16 +26,18 @@ export function SettingsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [detectingDownloads, setDetectingDownloads] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [deactivating, setDeactivating] = useState(false);
 
-  // ── Save ─────────────────────────────────────────────────────────────────
+  const licenseStatus = getLicenseStatus();
+  const stored = getStoredLicense();
+
   async function handleSave() {
     updateSettings(form);
-    setStatus({ type: "success", message: "Einstellungen gespeichert." });
+    setStatus({ type: "success", message: t("settings.settingsSaved") });
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
 
-  // ── CS2 auto-detect ──────────────────────────────────────────────────────
   async function handleAutoDetect() {
     setDetecting(true);
     try {
@@ -44,32 +51,27 @@ export function SettingsPage() {
         setForm((f) => ({ ...f, ...updated }));
         updateSettings(updated);
         await refreshDemos();
-        setStatus({
-          type: "success",
-          message: `CS2 gefunden und gespeichert. Replay-Ordner: ${result.replayFolder}`,
-        });
+        setStatus({ type: "success", message: t("settings.cs2Found", { folder: result.replayFolder }) });
       } else {
-        setStatus({ type: "error", message: "CS2 wurde nicht automatisch gefunden. Bitte den Pfad manuell eintragen." });
+        setStatus({ type: "error", message: t("settings.cs2NotFoundMsg") });
       }
     } catch {
-      setStatus({ type: "error", message: "Fehler bei der automatischen Erkennung." });
+      setStatus({ type: "error", message: t("settings.cs2DetectError") });
     } finally {
       setDetecting(false);
     }
   }
 
-  // ── Open replay folder ───────────────────────────────────────────────────
   async function handleOpenReplayFolder() {
     const folder = form.demoDirectory || settings.demoDirectory;
-    if (!folder) { setStatus({ type: "error", message: "Kein Replay-Ordner konfiguriert." }); return; }
-    try { await tauriOpenFolder(folder); } catch { setStatus({ type: "info", message: `Ordner: ${folder}` }); }
+    if (!folder) { setStatus({ type: "error", message: t("settings.noReplayFolder") }); return; }
+    try { await tauriOpenFolder(folder); } catch { setStatus({ type: "info", message: `${t("settings.openFolder")}: ${folder}` }); }
   }
 
-  // ── Detect replay folder from steam path ─────────────────────────────────
   async function handleDetectReplayFolder() {
     const steam = form.steamPath;
     if (!steam) {
-      setStatus({ type: "error", message: "Bitte erst den Steam-Pfad eintragen oder CS2 automatisch erkennen lassen." });
+      setStatus({ type: "error", message: t("settings.cs2NotFoundMsg") });
       return;
     }
     try {
@@ -78,27 +80,25 @@ export function SettingsPage() {
         setForm((f) => ({ ...f, demoDirectory: folder }));
         updateSettings({ demoDirectory: folder });
         await refreshDemos();
-        setStatus({ type: "success", message: `Replay-Ordner gefunden und gespeichert: ${folder}` });
+        setStatus({ type: "success", message: t("settings.replayFolderFound", { folder }) });
       }
     } catch {
-      setStatus({ type: "error", message: "Replay-Ordner konnte nicht ermittelt werden." });
+      setStatus({ type: "error", message: t("settings.replayFolderError") });
     }
   }
 
-  // ── Refresh library ──────────────────────────────────────────────────────
   async function handleRefreshLibrary() {
     setRefreshing(true);
     try {
       await refreshDemos();
-      setStatus({ type: "success", message: "Demo-Bibliothek aus dem Ordner neu geladen." });
+      setStatus({ type: "success", message: t("settings.libReloaded") });
     } catch {
-      setStatus({ type: "error", message: "Fehler beim Laden der Demo-Bibliothek." });
+      setStatus({ type: "error", message: t("settings.libReloadError") });
     } finally {
       setRefreshing(false);
     }
   }
 
-  // ── Auto-detect downloads folder ─────────────────────────────────────────
   async function handleAutoDetectDownloads() {
     if (!isTauri()) return;
     setDetectingDownloads(true);
@@ -107,62 +107,45 @@ export function SettingsPage() {
       if (folder) {
         setForm((f) => ({ ...f, downloadsFolder: folder }));
         updateSettings({ downloadsFolder: folder });
-        setStatus({ type: "success", message: `Downloads-Ordner erkannt: ${folder}` });
+        setStatus({ type: "success", message: t("settings.downloadsFolderDetected", { folder }) });
       } else {
-        setStatus({ type: "error", message: "Downloads-Ordner konnte nicht automatisch erkannt werden." });
+        setStatus({ type: "error", message: t("settings.downloadsFolderError") });
       }
     } catch {
-      setStatus({ type: "error", message: "Fehler bei der Erkennung des Downloads-Ordners." });
+      setStatus({ type: "error", message: t("settings.downloadsFolderError") });
     } finally {
       setDetectingDownloads(false);
     }
   }
 
-  // ── Open downloads folder ─────────────────────────────────────────────────
   async function handleOpenDownloadsFolder() {
     const folder = form.downloadsFolder || settings.downloadsFolder;
-    if (!folder) { setStatus({ type: "error", message: "Kein Downloads-Ordner konfiguriert." }); return; }
-    try { await tauriOpenFolder(folder); } catch { setStatus({ type: "info", message: `Ordner: ${folder}` }); }
+    if (!folder) { setStatus({ type: "error", message: t("settings.noDownloadsFolder") }); return; }
+    try { await tauriOpenFolder(folder); } catch { setStatus({ type: "info", message: `${t("settings.openFolder")}: ${folder}` }); }
   }
 
-  // ── Scan downloads folder ─────────────────────────────────────────────────
   async function handleScanDownloads() {
     const folder = form.downloadsFolder || settings.downloadsFolder;
-    if (!folder) {
-      setStatus({ type: "error", message: "Bitte zuerst einen Downloads-Ordner konfigurieren." });
-      return;
-    }
+    if (!folder) { setStatus({ type: "error", message: t("settings.noDownloadsFolder") }); return; }
     const replayFolder = form.demoDirectory || settings.demoDirectory;
-    if (!replayFolder) {
-      setStatus({ type: "error", message: "Kein CS2 Replay-Ordner konfiguriert. Bitte CS2 zuerst einrichten." });
-      return;
-    }
+    if (!replayFolder) { setStatus({ type: "error", message: t("settings.noReplayFolder") }); return; }
 
     setScanning(true);
     try {
       const { candidates, errors } = await scanDownloadsFolder(folder);
-      if (errors.length > 0) {
-        setStatus({ type: "error", message: errors[0] });
-        return;
-      }
-      if (candidates.length === 0) {
-        setStatus({ type: "info", message: "Im Downloads-Ordner wurde keine neue Demo gefunden." });
-        return;
-      }
+      if (errors.length > 0) { setStatus({ type: "error", message: errors[0] }); return; }
+      if (candidates.length === 0) { setStatus({ type: "info", message: t("settings.noNewDemos") }); return; }
 
-      setStatus({ type: "info", message: `${candidates.length} Demo-Datei(en) gefunden — wird verarbeitet...` });
+      setStatus({ type: "info", message: t("home.demosFound", { count: candidates.length }) });
       const result = await processCandidates(candidates, replayFolder);
       await refreshDemos();
 
       const parts: string[] = [];
-      if (result.processed.length > 0) parts.push(`${result.processed.length} Demo(s) wurden im Replay-Ordner gespeichert.`);
-      if (result.skipped.length > 0) parts.push(`${result.skipped.length} bereits vorhanden (übersprungen).`);
-      if (result.errors.length > 0) parts.push(`${result.errors.length} Fehler.`);
+      if (result.processed.length > 0) parts.push(t("settings.downloadsSaved", { count: result.processed.length }));
+      if (result.skipped.length > 0) parts.push(t("settings.downloadsSkipped", { count: result.skipped.length }));
+      if (result.errors.length > 0) parts.push(t("settings.downloadsErrors", { count: result.errors.length }));
 
-      setStatus({
-        type: result.processed.length > 0 ? "success" : "info",
-        message: parts.join(" ") || "Keine neuen Demos verarbeitet.",
-      });
+      setStatus({ type: result.processed.length > 0 ? "success" : "info", message: parts.join(" ") || t("settings.noNewDemos") });
     } catch (err) {
       setStatus({ type: "error", message: String(err) });
     } finally {
@@ -170,7 +153,6 @@ export function SettingsPage() {
     }
   }
 
-  // ── Folder / file pickers ────────────────────────────────────────────────
   async function handlePickFolder(field: "demoDirectory" | "downloadsFolder") {
     if (!isTauri()) return;
     try {
@@ -184,9 +166,24 @@ export function SettingsPage() {
     if (!isTauri()) return;
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
-      const file = await open({ multiple: false, filters: [{ name: "Ausführbare Datei", extensions: ["exe"] }] });
+      const file = await open({ multiple: false, filters: [{ name: "Executable", extensions: ["exe"] }] });
       if (file && typeof file === "string") setForm((f) => ({ ...f, [field]: file }));
     } catch { /* dialog not available */ }
+  }
+
+  async function handleDeactivate() {
+    setDeactivating(true);
+    try {
+      const result = await deactivateLicense();
+      if (result.success) {
+        setStatus({ type: "success", message: t("license.deactivateSuccess") });
+        setTimeout(() => window.location.reload(), 1500);
+      } else {
+        setStatus({ type: "error", message: t("license.deactivateError") });
+      }
+    } finally {
+      setDeactivating(false);
+    }
   }
 
   const labelClass = "block text-white/60 text-xs font-medium mb-2";
@@ -209,7 +206,7 @@ export function SettingsPage() {
           {isTauri() && (onBrowseDir || onBrowseFile) && (
             <button
               onClick={onBrowseDir ?? onBrowseFile}
-              title="Durchsuchen"
+              title={t("settings.browse")}
               className="px-3 py-3 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white/80 transition-all"
             >
               <FolderOpen className="w-4 h-4" />
@@ -224,52 +221,29 @@ export function SettingsPage() {
   return (
     <div className="max-w-xl mx-auto px-6 py-8">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">Einstellungen</h1>
-        <p className="text-white/40 text-sm mt-1">Pfade und Optionen konfigurieren</p>
+        <h1 className="text-2xl font-bold text-white">{t("settings.title")}</h1>
+        <p className="text-white/40 text-sm mt-1">{t("settings.subtitle")}</p>
       </div>
 
       <div className="space-y-6">
 
-        {/* ── FACEIT-Status ─────────────────────────────────────────── */}
-        <Section title="FACEIT-Verbindung" icon={Shield}>
-          {connection ? (
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                {connection.avatar && (
-                  <img src={connection.avatar} alt="" className="w-8 h-8 rounded-full" />
-                )}
-                <div>
-                  <p className="text-white font-semibold text-sm">{connection.nickname}</p>
-                  <p className="text-white/40 text-xs mt-0.5 flex items-center gap-1">
-                    {connection.authMethod === "api_key" ? (
-                      <><Key className="w-3 h-3" /> API-Schlüssel</>
-                    ) : (
-                      <><Shield className="w-3 h-3" /> OAuth</>
-                    )}
-                    {connection.elo && <> · {connection.elo} ELO</>}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={disconnect}
-                className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/3 hover:bg-white/8 text-white/40 hover:text-white/70 text-xs transition-all"
-              >
-                Trennen
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-3">
-              <WifiOff className="w-4 h-4 text-white/25" />
-              <div>
-                <p className="text-white/50 text-sm">Nicht verbunden</p>
-                <p className="text-white/25 text-xs mt-0.5">FACEIT-Seite öffnen, um Konto zu verbinden</p>
-              </div>
-            </div>
-          )}
+        {/* ── Language ──────────────────────────────────────────────── */}
+        <Section title={t("settings.language")} icon={Globe}>
+          <select
+            value={i18n.language.split("-")[0]}
+            onChange={(e) => i18n.changeLanguage(e.target.value)}
+            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-orange-500/50 transition-colors cursor-pointer"
+          >
+            {LANGUAGES.map((lang) => (
+              <option key={lang.code} value={lang.code} className="bg-[#0d1117]">
+                {lang.nativeLabel} ({lang.label})
+              </option>
+            ))}
+          </select>
         </Section>
 
-        {/* ── CS2-Pfad ─────────────────────────────────────────────── */}
-        <Section title="CS2-Pfad" icon={Crosshair}>
+        {/* ── CS2-Pfad ──────────────────────────────────────────────── */}
+        <Section title={t("settings.cs2Section")} icon={Crosshair}>
           {isTauri() && (
             <button
               onClick={handleAutoDetect}
@@ -281,12 +255,12 @@ export function SettingsPage() {
               )}
             >
               {detecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-              {detecting ? "Suche..." : "CS2 automatisch erkennen"}
+              {detecting ? t("settings.detecting") : t("settings.cs2AutoDetect")}
             </button>
           )}
 
           <PathInput
-            label="Pfad zur cs2.exe"
+            label={t("settings.cs2Path")}
             value={form.cs2Path}
             onChange={(v) => setForm((f) => ({ ...f, cs2Path: v }))}
             placeholder="C:\Program Files (x86)\Steam\...\game\bin\win64\cs2.exe"
@@ -295,7 +269,7 @@ export function SettingsPage() {
 
           <div className="mt-4">
             <PathInput
-              label="Steam-Installationspfad"
+              label={t("settings.steamPath")}
               value={form.steamPath}
               onChange={(v) => setForm((f) => ({ ...f, steamPath: v }))}
               placeholder="C:\Program Files (x86)\Steam"
@@ -311,7 +285,7 @@ export function SettingsPage() {
           </div>
 
           <div className="mt-4">
-            <label className={labelClass}>Steam ID64 (eigener Spieler)</label>
+            <label className={labelClass}>{t("settings.steamId")}</label>
             <input
               type="text"
               value={form.steamId}
@@ -319,23 +293,19 @@ export function SettingsPage() {
               placeholder="76561198012345678"
               className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/25 focus:outline-none focus:border-orange-500/50 transition-colors font-mono"
             />
-            <p className="text-white/25 text-xs mt-2">
-              Wird automatisch ausgefüllt, wenn du dein FACEIT-Konto verbindest. Wird verwendet, um in Demo-Replays zwischen eigenem Team und Gegnern zu unterscheiden.
-            </p>
+            <p className="text-white/25 text-xs mt-2">{t("settings.steamIdHint")}</p>
           </div>
         </Section>
 
-        {/* ── CS2 Replay-Ordner ────────────────────────────────────── */}
-        <Section title="CS2 Replay-Ordner" icon={FolderSearch}>
+        {/* ── Replay-Ordner ──────────────────────────────────────────── */}
+        <Section title={t("settings.replaySection")} icon={FolderSearch}>
           <div className="mb-3 flex items-start gap-2 p-3 rounded-lg bg-orange-900/15 border border-orange-700/25">
             <Info className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
-            <p className="text-orange-200/70 text-xs">
-              CS2 lädt Demos per <span className="font-mono text-orange-200/90">playdemo replays/DATEINAME</span> relativ zum csgo-Ordner. Demos müssen im Replay-Ordner liegen.
-            </p>
+            <p className="text-orange-200/70 text-xs">{t("settings.replayInfo")}</p>
           </div>
 
           <PathInput
-            label="Replay-Ordner (CS2 Demo-Speicherort)"
+            label={t("settings.replayFolderPath")}
             value={form.demoDirectory}
             onChange={(v) => setForm((f) => ({ ...f, demoDirectory: v }))}
             placeholder="C:\...\Counter-Strike Global Offensive\game\csgo\replays"
@@ -349,7 +319,7 @@ export function SettingsPage() {
                 className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-white/50 hover:text-white/80 hover:bg-white/8 border border-white/10 transition-all"
               >
                 <FolderOpen className="w-3.5 h-3.5" />
-                Ordner öffnen
+                {t("settings.openFolder")}
               </button>
               {form.steamPath && (
                 <button
@@ -357,7 +327,7 @@ export function SettingsPage() {
                   className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-white/50 hover:text-white/80 hover:bg-white/8 border border-white/10 transition-all"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
-                  Neu erkennen
+                  {t("settings.redetect")}
                 </button>
               )}
               <button
@@ -366,31 +336,25 @@ export function SettingsPage() {
                 className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-white/50 hover:text-white/80 hover:bg-white/8 border border-white/10 transition-all disabled:opacity-50"
               >
                 {refreshing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                Bibliothek neu einlesen
+                {t("settings.refreshLib")}
               </button>
             </div>
           )}
         </Section>
 
-        {/* ── Downloads-Ordner ─────────────────────────────────────── */}
-        <Section title="Downloads-Ordner" icon={Download}>
+        {/* ── Downloads-Ordner ──────────────────────────────────────── */}
+        <Section title={t("settings.downloadsSection")} icon={Download}>
           <div className="mb-3 flex items-start gap-2 p-3 rounded-lg bg-blue-900/15 border border-blue-700/25">
             <Info className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-            <p className="text-blue-200/70 text-xs">
-              Der Downloads-Ordner wird nach <span className="font-mono text-blue-200/90">.dem</span>,{" "}
-              <span className="font-mono text-blue-200/90">.dem.gz</span> und{" "}
-              <span className="font-mono text-blue-200/90">.dem.zst</span> Dateien gescannt.
-              Gefundene Demos werden automatisch entpackt und in den CS2 Replay-Ordner verschoben.
-            </p>
+            <p className="text-blue-200/70 text-xs">{t("settings.downloadsInfo")}</p>
           </div>
 
           <PathInput
-            label="Downloads-Ordner"
+            label={t("settings.downloadsPath")}
             value={form.downloadsFolder}
             onChange={(v) => setForm((f) => ({ ...f, downloadsFolder: v }))}
             placeholder="C:\Users\Name\Downloads"
             onBrowseDir={() => handlePickFolder("downloadsFolder")}
-            hint="Wird automatisch erkannt, wenn leer."
           />
 
           {isTauri() && (
@@ -401,14 +365,14 @@ export function SettingsPage() {
                 className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-white/50 hover:text-white/80 hover:bg-white/8 border border-white/10 transition-all disabled:opacity-50"
               >
                 {detectingDownloads ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
-                Ordner automatisch erkennen
+                {t("settings.autoDetectDownloads")}
               </button>
               <button
                 onClick={handleOpenDownloadsFolder}
                 className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-white/50 hover:text-white/80 hover:bg-white/8 border border-white/10 transition-all"
               >
                 <FolderOpen className="w-3.5 h-3.5" />
-                Ordner öffnen
+                {t("settings.openFolder")}
               </button>
               <button
                 onClick={handleScanDownloads}
@@ -416,28 +380,58 @@ export function SettingsPage() {
                 className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-orange-300 hover:text-orange-200 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 transition-all disabled:opacity-50"
               >
                 {scanning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                {scanning ? "Wird gescannt..." : "Downloads-Ordner scannen"}
+                {scanning ? t("settings.scanning") : t("settings.scanDownloads")}
               </button>
             </div>
           )}
         </Section>
 
-        {/* ── Optionen ─────────────────────────────────────────────── */}
-        <Section title="Optionen">
+        {/* ── Optionen ──────────────────────────────────────────────── */}
+        <Section title={t("settings.optionsSection")}>
           <div className="space-y-4">
             <Toggle
-              label="Automatisch entpacken"
-              description=".dem.gz und .dem.zst Dateien werden beim Import automatisch zu .dem entpackt"
+              label={t("settings.autoExtract")}
+              description={t("settings.autoExtractDesc")}
               value={form.autoExtractGz}
               onChange={(v) => setForm((f) => ({ ...f, autoExtractGz: v }))}
             />
             <Toggle
-              label="Nach Import zur Bibliothek hinzufügen"
-              description="Importierte Demos werden automatisch in der Bibliothek gespeichert"
+              label={t("settings.autoAdd")}
+              description={t("settings.autoAddDesc")}
               value={form.autoAddToLibrary}
               onChange={(v) => setForm((f) => ({ ...f, autoAddToLibrary: v }))}
             />
           </div>
+        </Section>
+
+        {/* ── License ───────────────────────────────────────────────── */}
+        <Section title={t("settings.licenseSection")} icon={Key}>
+          {stored ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-3">
+                <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />
+                <div>
+                  <p className="text-green-300 text-sm font-medium">{t("settings.licensed")}</p>
+                  <p className="text-white/30 text-xs font-mono mt-0.5">
+                    {stored.key.slice(0, 8)}…
+                    {licenseStatus === "offline_grace" && (
+                      <span className="ml-2 text-yellow-400/60">(offline)</span>
+                    )}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={handleDeactivate}
+                disabled={deactivating}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-red-400/70 hover:text-red-300 hover:bg-red-900/20 border border-red-900/30 transition-all disabled:opacity-50"
+              >
+                {deactivating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                {deactivating ? t("settings.deactivating") : t("settings.deactivate")}
+              </button>
+            </div>
+          ) : (
+            <p className="text-white/40 text-sm">{t("license.subtitle")}</p>
+          )}
         </Section>
 
         {/* Environment banners */}
@@ -445,21 +439,18 @@ export function SettingsPage() {
           <div className="flex items-start gap-3 p-4 rounded-xl border border-yellow-700/30 bg-yellow-900/15">
             <Info className="w-5 h-5 text-yellow-400 shrink-0 mt-0.5" />
             <div>
-              <p className="text-yellow-300 text-sm font-medium">Browser-Vorschau aktiv</p>
-              <p className="text-yellow-200/55 text-xs mt-1">
-                Dateisystem-Zugriff, Ordner öffnen und CS2 starten sind nur in der Desktop-App verfügbar.
-              </p>
+              <p className="text-yellow-300 text-sm font-medium">{t("settings.browserWarning")}</p>
+              <p className="text-yellow-200/55 text-xs mt-1">{t("settings.browserWarningDesc")}</p>
             </div>
           </div>
         )}
         {isTauri() && (
           <div className="flex items-center gap-2 p-3 rounded-xl border border-green-700/25 bg-green-900/10">
             <CheckCircle2 className="w-4 h-4 text-green-400" />
-            <p className="text-green-300/80 text-xs">Desktop-App aktiv — alle Funktionen verfügbar.</p>
+            <p className="text-green-300/80 text-xs">{t("settings.desktopActive")}</p>
           </div>
         )}
 
-        {/* Save */}
         <button
           onClick={handleSave}
           className={cn(
@@ -470,14 +461,12 @@ export function SettingsPage() {
           )}
         >
           <Save className="w-4 h-4" />
-          {saved ? "Gespeichert!" : "Einstellungen speichern"}
+          {saved ? t("settings.saved") : t("settings.save")}
         </button>
       </div>
     </div>
   );
 }
-
-// ── Helper components ────────────────────────────────────────────────────────
 
 function Section({ title, icon: Icon, children }: {
   title: string; icon?: React.ElementType; children: React.ReactNode;
@@ -505,15 +494,15 @@ function Toggle({ label, description, value, onChange }: {
       <button
         onClick={() => onChange(!value)}
         className={cn(
-          "relative w-11 h-6 rounded-full transition-colors duration-200 shrink-0",
-          value ? "bg-orange-500" : "bg-white/15"
+          "relative shrink-0 w-11 h-6 rounded-full border transition-all duration-200",
+          value
+            ? "bg-orange-500 border-orange-500/60"
+            : "bg-white/8 border-white/15"
         )}
-        aria-checked={value}
-        role="switch"
       >
         <span
           className={cn(
-            "absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform duration-200",
+            "absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-transform duration-200",
             value ? "translate-x-5" : "translate-x-0"
           )}
         />

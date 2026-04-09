@@ -3,13 +3,11 @@ import {
   FolderOpen, Pencil, Trash2, Check, X, Copy, Loader2,
   Volume2, Info, Users, ChevronDown, ChevronUp,
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { Demo } from "../types/demo";
 import { useApp } from "../context/AppContext";
 import { formatFileSize, formatDate, openDemoFolder } from "../services/demoService";
-import {
-  buildPlaydemoArg,
-  copyToClipboard,
-} from "../services/cs2Service";
+import { buildPlaydemoArg, copyToClipboard } from "../services/cs2Service";
 import { getCachedPlayers, setCachedPlayers } from "../services/parsedPlayersCache";
 import {
   type VoiceMode,
@@ -32,21 +30,18 @@ interface DemoCardProps {
 
 export function DemoCard({ demo }: DemoCardProps) {
   const { settings, renameDemo, deleteDemo, setStatus } = useApp();
+  const { t } = useTranslation();
 
-  // Rename / delete UI
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState(demo.displayName);
   const [deleting, setDeleting] = useState(false);
 
-  // Voice mode
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("all");
 
-  // Clipboard
   const [cmdCopied, setCmdCopied] = useState(false);
   const [lastCmd, setLastCmd] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
 
-  // Demo parser
   const [parsedPlayers, setParsedPlayers] = useState<TauriDemoPlayer[] | null>(() =>
     demo.filepath ? getCachedPlayers(demo.filepath) : null
   );
@@ -55,30 +50,28 @@ export function DemoCard({ demo }: DemoCardProps) {
   const [showPlayers, setShowPlayers] = useState(false);
   const playdemoArg = buildPlaydemoArg(demo.filename);
 
-  // Computed rosters from parsed players — team split uses m_iTeamNum from demo only
+  const voiceModeLabel = (mode: VoiceMode): string => {
+    const map: Record<VoiceMode, string> = {
+      all: t("demo.voiceAll"),
+      none: t("demo.voiceNone"),
+      team_t: t("demo.voiceT"),
+      team_ct: t("demo.voiceCT"),
+    };
+    return map[mode] ?? mode;
+  };
+
   const rosters: DemoRosters | null = parsedPlayers ? buildRosters(parsedPlayers) : null;
-
-  // Players to DISPLAY for the selected mode (T or CT team)
   const playersForMode = getPlayersForMode(voiceMode, rosters);
-
-  // Players the user WANTS TO HEAR — their entityIds drive tv_listen_voice_indices
   const playersToHear = getPlayersToHear(voiceMode, rosters);
-
-  // Players with and without resolved entity/slot IDs (for the selected mode)
   const knownPlayers = playersToHear ? playersWithEntityIds(playersToHear) : [];
   const missingPlayers = playersToHear ? playersMissingEntityIds(playersToHear) : [];
-
-  // True when at least ONE player has a known slot → partial command is possible
   const autoMuteAvailable =
-    (voiceMode === "team_t" || voiceMode === "team_ct") &&
-    knownPlayers.length > 0;
-
+    (voiceMode === "team_t" || voiceMode === "team_ct") && knownPlayers.length > 0;
   const fullCommand = buildFullPlayCommand(playdemoArg, voiceMode, playersToHear);
 
-  // ── Parse demo on mount (Tauri only) — uses module-level cache ───────────
   useEffect(() => {
     if (!isTauri() || !demo.filepath) return;
-    if (getCachedPlayers(demo.filepath) !== null) return; // already cached
+    if (getCachedPlayers(demo.filepath) !== null) return;
     if (parsedPlayers !== null || parsing) return;
     setParsing(true);
     tauriParseDemoPlayers(demo.filepath)
@@ -94,22 +87,20 @@ export function DemoCard({ demo }: DemoCardProps) {
       .finally(() => setParsing(false));
   }, [demo.filepath]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Copy command ─────────────────────────────────────────────────────────
   async function handleCopyCommand() {
     if (!fullCommand) {
-      setStatus({ type: "error", message: "Sprachfilter für diesen Modus nicht verfügbar — Demo-Daten fehlen." });
+      setStatus({ type: "error", message: t("demo.filterNotAvail") });
       return;
     }
     const copied = await copyToClipboard(fullCommand);
     setCmdCopied(copied);
     setLastCmd(fullCommand);
     if (copied) {
-      setStatus({ type: "success", message: "Befehl wurde in die Zwischenablage kopiert." });
+      setStatus({ type: "success", message: t("demo.commandCopied") });
       setTimeout(() => setCmdCopied(false), 3000);
     }
   }
 
-  // ── Rename ───────────────────────────────────────────────────────────────
   async function handleRenameConfirm() {
     if (!newName.trim() || newName === demo.displayName) {
       setRenaming(false);
@@ -120,31 +111,28 @@ export function DemoCard({ demo }: DemoCardProps) {
       await renameDemo(demo.id, newName.trim());
       setRenaming(false);
     } catch (err) {
-      setStatus({ type: "error", message: `Umbenennen fehlgeschlagen: ${String(err)}` });
+      setStatus({ type: "error", message: t("demo.renameFailed", { error: String(err) }) });
     }
   }
 
-  // ── Delete ───────────────────────────────────────────────────────────────
   async function handleDelete() {
     setDeleting(true);
     try {
       await deleteDemo(demo.id);
     } catch (err) {
-      setStatus({ type: "error", message: `Löschen fehlgeschlagen: ${String(err)}` });
+      setStatus({ type: "error", message: t("demo.deleteFailed", { error: String(err) }) });
       setDeleting(false);
     }
   }
 
-  // ── Open folder ──────────────────────────────────────────────────────────
   async function handleOpenFolder() {
     try {
       await openDemoFolder(demo);
     } catch {
-      setStatus({ type: "info", message: `Ordner: ${demo.directory}` });
+      setStatus({ type: "info", message: t("demo.folderPath", { path: demo.directory }) });
     }
   }
 
-  // ── Team label helper ─────────────────────────────────────────────────────
   function teamLabel(teamNum: number): string {
     if (teamNum === 2) return "T";
     if (teamNum === 3) return "CT";
@@ -189,13 +177,13 @@ export function DemoCard({ demo }: DemoCardProps) {
           </div>
           {!renaming && (
             <div className="flex items-center gap-1 shrink-0">
-              <button onClick={() => setRenaming(true)} title="Umbenennen" className="p-1.5 rounded-lg text-white/25 hover:text-white/60 hover:bg-white/8 transition-all">
+              <button onClick={() => setRenaming(true)} title={t("demo.rename")} className="p-1.5 rounded-lg text-white/25 hover:text-white/60 hover:bg-white/8 transition-all">
                 <Pencil className="w-3.5 h-3.5" />
               </button>
-              <button onClick={handleOpenFolder} title="Ordner öffnen" className="p-1.5 rounded-lg text-white/25 hover:text-white/60 hover:bg-white/8 transition-all">
+              <button onClick={handleOpenFolder} title={t("demo.openFolder")} className="p-1.5 rounded-lg text-white/25 hover:text-white/60 hover:bg-white/8 transition-all">
                 <FolderOpen className="w-3.5 h-3.5" />
               </button>
-              <button onClick={handleDelete} disabled={deleting} title="Löschen" className="p-1.5 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-900/20 transition-all disabled:opacity-40">
+              <button onClick={handleDelete} disabled={deleting} title={t("demo.delete")} className="p-1.5 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-900/20 transition-all disabled:opacity-40">
                 {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
               </button>
             </div>
@@ -207,33 +195,30 @@ export function DemoCard({ demo }: DemoCardProps) {
           <span>{formatFileSize(demo.size)}</span>
           <span>·</span>
           <span>{formatDate(demo.modifiedAt)}</span>
-          {/* Parser status indicator */}
           {isTauri() && (
             <span className="ml-auto flex items-center gap-1">
-              {parsing && <><Loader2 className="w-2.5 h-2.5 animate-spin" /><span className="text-white/20">Analysiere...</span></>}
+              {parsing && <><Loader2 className="w-2.5 h-2.5 animate-spin" /><span className="text-white/20">{t("demo.analyzing")}</span></>}
               {!parsing && parsedPlayers && parsedPlayers.length > 0 && (
                 <button
                   onClick={() => setShowPlayers((v) => !v)}
                   className="flex items-center gap-1 text-white/25 hover:text-white/55 transition-colors"
-                  title="Spielerliste anzeigen"
                 >
                   <Users className="w-2.5 h-2.5" />
-                  <span>{parsedPlayers.length} Spieler</span>
+                  <span>{t("demo.players", { count: parsedPlayers.length })}</span>
                   {showPlayers ? <ChevronUp className="w-2.5 h-2.5" /> : <ChevronDown className="w-2.5 h-2.5" />}
                 </button>
               )}
               {!parsing && parseError && (
-                <span className="text-red-400/40 text-[10px]" title={parseError}>Parse-Fehler</span>
+                <span className="text-red-400/40 text-[10px]" title={parseError}>{t("demo.parseError")}</span>
               )}
             </span>
           )}
         </div>
 
-        {/* Player list (collapsible debug view — shows team + voice slot) */}
+        {/* Player list (collapsible) */}
         {showPlayers && rosters && (
           <div className="mb-4 p-3 rounded-lg bg-black/30 border border-white/6">
             <div className="grid grid-cols-2 gap-3">
-              {/* Terrorists */}
               <div>
                 <p className="text-yellow-400/60 text-[10px] font-bold uppercase tracking-wider mb-1.5">Team T</p>
                 <div className="space-y-0.5">
@@ -246,12 +231,9 @@ export function DemoCard({ demo }: DemoCardProps) {
                       }
                     </div>
                   ))}
-                  {rosters.terrorists.length === 0 && (
-                    <p className="text-white/20 text-[11px]">—</p>
-                  )}
+                  {rosters.terrorists.length === 0 && <p className="text-white/20 text-[11px]">—</p>}
                 </div>
               </div>
-              {/* Counter-Terrorists */}
               <div>
                 <p className="text-blue-400/60 text-[10px] font-bold uppercase tracking-wider mb-1.5">Team CT</p>
                 <div className="space-y-0.5">
@@ -264,13 +246,10 @@ export function DemoCard({ demo }: DemoCardProps) {
                       }
                     </div>
                   ))}
-                  {rosters.counterTerrorists.length === 0 && (
-                    <p className="text-white/20 text-[11px]">—</p>
-                  )}
+                  {rosters.counterTerrorists.length === 0 && <p className="text-white/20 text-[11px]">—</p>}
                 </div>
               </div>
             </div>
-            {/* Bitmask summary */}
             {parsedPlayers && parsedPlayers.length > 0 && (
               <div className="mt-2 pt-2 border-t border-white/5">
                 <p className="text-white/20 text-[9px] font-mono">
@@ -287,14 +266,13 @@ export function DemoCard({ demo }: DemoCardProps) {
         <div className="mb-3">
           <p className="text-white/40 text-xs mb-2 flex items-center gap-1.5">
             <Volume2 className="w-3 h-3" />
-            Voice-Modus
+            {t("demo.voiceMode")}
             {parsing && <Loader2 className="w-2.5 h-2.5 animate-spin text-white/20" />}
           </p>
           <div className="grid grid-cols-4 gap-1">
             {VOICE_OPTIONS.map((opt) => {
               const needsRoster = opt.mode === "team_t" || opt.mode === "team_ct";
               const hasRoster = needsRoster && rosters !== null;
-              // "full" = all slots known; "partial" = some slots known; "list" = roster only; "none" = no data
               const dotStatus = !needsRoster
                 ? "ok"
                 : autoMuteAvailable && voiceMode === opt.mode && missingPlayers.length === 0
@@ -308,7 +286,7 @@ export function DemoCard({ demo }: DemoCardProps) {
                 <button
                   key={opt.mode}
                   onClick={() => setVoiceMode(opt.mode)}
-                  title={opt.description}
+                  title={voiceModeLabel(opt.mode)}
                   className={cn(
                     "relative px-2 py-1.5 rounded-lg border text-xs font-medium transition-all duration-150",
                     voiceMode === opt.mode
@@ -316,18 +294,18 @@ export function DemoCard({ demo }: DemoCardProps) {
                       : "border-white/8 bg-white/3 text-white/40 hover:text-white/60 hover:border-white/15"
                   )}
                 >
-                  {opt.label}
+                  {voiceModeLabel(opt.mode)}
                   {dotStatus === "full" && (
-                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-400" title="Alle Spieler erkannt — automatische Stummschaltung aktiv" />
+                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-400" title={t("demo.allDetected")} />
                   )}
                   {dotStatus === "partial" && (
-                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-yellow-400" title="Teilweise erkannt — Befehl wird mit bekannten Slots generiert" />
+                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-yellow-400" title={t("demo.partialDetected")} />
                   )}
                   {dotStatus === "list" && (
-                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-700/80" title="Spielerliste verfügbar" />
+                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-700/80" title={t("demo.listAvail")} />
                   )}
                   {dotStatus === "none" && needsRoster && (
-                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-white/20" title="Demo noch nicht analysiert" />
+                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-white/20" title={t("demo.notAnalyzed")} />
                   )}
                 </button>
               );
@@ -347,9 +325,13 @@ export function DemoCard({ demo }: DemoCardProps) {
               <Info className="w-3 h-3 shrink-0" />
               {autoMuteAvailable
                 ? missingPlayers.length > 0
-                  ? `Sprachfilter teilweise verfügbar: ${knownPlayers.length} von ${(playersToHear?.length ?? 0)} Spielern erkannt — ${missingPlayers.length} Spieler fehlen im Befehl.`
-                  : `${knownPlayers.length} Spieler werden automatisch gehört (Gegenseite stumm) — Befehl unten kopieren.`
-                : "Sprachfilter für diese Demo nicht verfügbar."}
+                  ? t("demo.partialFilter", {
+                      known: knownPlayers.length,
+                      total: playersToHear?.length ?? 0,
+                      missing: missingPlayers.length,
+                    })
+                  : t("demo.allPlayersHeard", { count: knownPlayers.length })
+                : t("demo.filterNA")}
             </div>
           )}
 
@@ -376,12 +358,12 @@ export function DemoCard({ demo }: DemoCardProps) {
           {fullCommand ? (
             <code className="flex-1 font-mono text-xs text-orange-300/80 truncate">{fullCommand}</code>
           ) : (
-            <span className="flex-1 text-xs text-white/25 italic">Sprachfilter nicht verfügbar — Demo-Daten fehlen.</span>
+            <span className="flex-1 text-xs text-white/25 italic">{t("demo.filterUnavailable")}</span>
           )}
           <button
             onClick={handleCopyCommand}
             disabled={!fullCommand}
-            title={fullCommand ? "Befehl kopieren" : "Kein Befehl verfügbar"}
+            title={fullCommand ? t("demo.copyCommand") : t("demo.filterUnavailable")}
             className="shrink-0 text-white/30 hover:text-orange-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
           >
             {cmdCopied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -401,24 +383,26 @@ export function DemoCard({ demo }: DemoCardProps) {
             )}
           >
             {cmdCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-            {cmdCopied ? "Kopiert!" : "Befehl kopieren"}
+            {cmdCopied ? t("demo.copied") : t("demo.copyCommand")}
           </button>
         </div>
 
         {/* Copied command panel */}
         {lastCmd && (
           <div className="mt-3 p-3 rounded-lg bg-black/30 border border-white/6">
-            <p className="text-white/40 text-xs mb-1.5 font-medium">Zuletzt kopierter Befehl</p>
+            <p className="text-white/40 text-xs mb-1.5 font-medium">{t("demo.lastCopied")}</p>
             <p className="text-white/25 text-[10px] mb-1">
-              1. CS2 öffnen → Konsole öffnen (Taste:{" "}
+              {t("demo.openConsole")}{" "}
               <kbd className="px-1 py-0.5 bg-white/10 rounded font-mono text-[9px] text-white/60">~</kbd>)
             </p>
             <p className="text-white/25 text-[10px] mb-2">
-              2. Befehl einfügen (<kbd className="px-1 py-0.5 bg-white/10 rounded font-mono text-[9px] text-white/60">Strg+V</kbd>) und Enter drücken
+              {t("demo.pasteCmd")}{" "}
+              <kbd className="px-1 py-0.5 bg-white/10 rounded font-mono text-[9px] text-white/60">Ctrl+V</kbd>
+              {t("demo.pressEnter")}
             </p>
             <div className="flex items-center gap-2 bg-black/40 rounded px-2.5 py-1.5">
               <code className="flex-1 font-mono text-[11px] text-orange-300/90 break-all">{lastCmd}</code>
-              <button onClick={handleCopyCommand} title="Nochmals kopieren" className="shrink-0 text-white/30 hover:text-white/60 transition-colors">
+              <button onClick={handleCopyCommand} title={t("demo.copyCommand")} className="shrink-0 text-white/30 hover:text-white/60 transition-colors">
                 <Copy className="w-3 h-3" />
               </button>
             </div>
@@ -443,7 +427,7 @@ export function DemoCard({ demo }: DemoCardProps) {
                     demo: demo.filename,
                     voiceMode,
                     fullCommand,
-                    spieler: dbg.players,
+                    players: dbg.players,
                     bitmask: dbg.bitmask,
                   }, null, 2)}
                 </pre>

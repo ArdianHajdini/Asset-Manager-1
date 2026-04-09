@@ -1355,7 +1355,7 @@ pub mod commands {
         }
     }
 
-    // ── Command — FACEIT demo download ───────────────
+    // ── Command — demo download (generic, no auth required) ──────
 
     #[tauri::command]
     pub async fn download_demo(
@@ -1467,156 +1467,6 @@ pub mod commands {
         }
     }
 
-    // ── Command — OAuth: open URL in system browser ───────────────
-    //
-    // Opens `url` in the user's default browser without loading it in the
-    // Tauri webview. This is required for the FACEIT OAuth flow so that the
-    // user's browser session / cookies are preserved and the OS can properly
-    // handle the redirect back to the local callback server.
-
-    #[tauri::command]
-    pub fn open_url_externally(url: String) -> Result<(), String> {
-        #[cfg(target_os = "windows")]
-        {
-            // `start "" <url>` — empty string is the window title (required)
-            Command::new("cmd")
-                .args(["/c", "start", "", url.as_str()])
-                .spawn()
-                .map_err(|e| format!("Browser konnte nicht geöffnet werden: {}", e))?;
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Command::new("open")
-                .arg(&url)
-                .spawn()
-                .map_err(|e| format!("Browser konnte nicht geöffnet werden: {}", e))?;
-        }
-        #[cfg(target_os = "linux")]
-        {
-            Command::new("xdg-open")
-                .arg(&url)
-                .spawn()
-                .map_err(|e| format!("Browser konnte nicht geöffnet werden: {}", e))?;
-        }
-        Ok(())
-    }
-
-    // ── Command — OAuth: Tauri WebviewWindow flow ─────────────────
-    //
-    // Opens FACEIT's OAuth authorization page in an embedded Tauri window.
-    // A navigation handler intercepts any redirect to
-    // https://127.0.0.1:14523/callback BEFORE the webview tries to load it
-    // (no actual server is needed on that port). The code and state query
-    // params are extracted, a `faceit-oauth-callback` Tauri event is emitted
-    // to the main window, and the OAuth window is closed automatically.
-    //
-    // The redirect URI registered in the FACEIT developer portal must be:
-    //   https://127.0.0.1:14523/callback
-
-    #[tauri::command]
-    pub fn open_oauth_webview(app: tauri::AppHandle, auth_url: String) -> Result<(), String> {
-        use std::path::PathBuf;
-        use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
-
-        const REDIRECT_PREFIX: &str = "https://127.0.0.1:14523/callback";
-
-        let app_for_nav = app.clone();
-
-        // Start the window on our own bundled loading page (oauth.html).
-        // Using WebviewUrl::External directly with on_navigation causes a blank
-        // white window in some Tauri v2 / WebView2 configurations. Starting on a
-        // local Tauri page first and then navigating via eval() avoids this.
-        let window = WebviewWindowBuilder::new(
-            &app,
-            "faceit-oauth",
-            WebviewUrl::App(PathBuf::from("oauth.html")),
-        )
-        .title("FACEIT Anmelden — CS2 Demo Manager")
-        .inner_size(520.0, 720.0)
-        .resizable(true)
-        .center()
-        // Spoof Chrome user-agent so FACEIT's login page does not detect
-        // WebView2 and refuse to render (anti-embedding security measure).
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-        .on_navigation(move |url| {
-            if !url.as_str().starts_with(REDIRECT_PREFIX) {
-                return true; // alle anderen Navigationen erlauben
-            }
-
-            let query = url.query().unwrap_or("");
-            let mut code = String::new();
-            let mut state = String::new();
-            let mut error = String::new();
-
-            for pair in query.split('&') {
-                if let Some((k, v)) = pair.split_once('=') {
-                    let decoded = percent_decode(v);
-                    match k {
-                        "code"  => code  = decoded,
-                        "state" => state = decoded,
-                        "error" => error = decoded,
-                        "error_description" if error.is_empty() => error = decoded,
-                        _ => {}
-                    }
-                }
-            }
-
-            let payload = serde_json::json!({
-                "code":  code,
-                "state": state,
-                "error": error,
-            });
-
-            let _ = app_for_nav.emit("faceit-oauth-callback", payload);
-
-            if let Some(win) = app_for_nav.get_webview_window("faceit-oauth") {
-                let _ = win.close();
-            }
-
-            false // Navigation blockieren — kein echter Server auf Port 14523
-        })
-        .build()
-        .map_err(|e| format!("[CS2DM] OAuth-Fenster konnte nicht geöffnet werden: {}", e))?;
-
-        // Give WebView2 a moment to finish initialising the local page, then
-        // navigate to FACEIT's auth URL via JavaScript. on_navigation (registered
-        // on the builder above) remains active for all subsequent navigations.
-        let win_for_eval = window.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-            // Rust Debug-format gives a properly quoted + escaped JS string literal.
-            let js = format!("window.location.replace({:?});", auth_url);
-            let _ = win_for_eval.eval(&js);
-        });
-
-        Ok(())
-    }
-
-    /// Minimal percent-decoder: replaces `%XX` sequences and `+` → space.
-    fn percent_decode(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let bytes = s.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] == b'%' && i + 2 < bytes.len() {
-                if let (Some(hi), Some(lo)) = (
-                    (bytes[i + 1] as char).to_digit(16),
-                    (bytes[i + 2] as char).to_digit(16),
-                ) {
-                    out.push((((hi << 4) | lo) as u8) as char);
-                    i += 3;
-                    continue;
-                }
-            } else if bytes[i] == b'+' {
-                out.push(' ');
-                i += 1;
-                continue;
-            }
-            out.push(bytes[i] as char);
-            i += 1;
-        }
-        out
-    }
 }
 
 // ─────────────────────────────────────────
@@ -1643,8 +1493,6 @@ pub fn run() {
             commands::scan_downloads,
             commands::detect_downloads_folder,
             commands::parse_demo_players,
-            commands::open_url_externally,
-            commands::open_oauth_webview,
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten der Anwendung");
