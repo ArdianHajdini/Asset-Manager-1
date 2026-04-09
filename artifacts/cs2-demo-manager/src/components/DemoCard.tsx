@@ -19,6 +19,7 @@ import {
   VOICE_OPTIONS,
   buildFullPlayCommand,
   buildRosters,
+  buildVoiceDebugInfo,
   getPlayersForMode,
   getPlayersToHear,
   playersWithEntityIds,
@@ -61,16 +62,14 @@ export function DemoCard({ demo }: DemoCardProps) {
   const cs2Status = getCS2Status(settings.cs2Path);
   const playdemoArg = buildPlaydemoArg(demo.filename);
 
-  // Computed rosters from parsed players
+  // Computed rosters from parsed players — team split uses m_iTeamNum from demo only
   const rosters: DemoRosters | null = parsedPlayers ? buildRosters(parsedPlayers) : null;
-  const userXuid = settings.steamId || undefined;
 
-  // Players to DISPLAY for the selected mode (own team or enemies)
-  const playersForMode = getPlayersForMode(voiceMode, rosters, userXuid);
+  // Players to DISPLAY for the selected mode (T or CT team)
+  const playersForMode = getPlayersForMode(voiceMode, rosters);
 
-  // Players the user WANTS TO HEAR for the selected mode — passed to command builder
-  // "own_team" → hear own team (bitmask of their slots); "enemy" → hear enemies
-  const playersToHear = getPlayersToHear(voiceMode, rosters, userXuid);
+  // Players the user WANTS TO HEAR — their entityIds drive tv_listen_voice_indices
+  const playersToHear = getPlayersToHear(voiceMode, rosters);
 
   // Players with and without resolved entity/slot IDs (for the selected mode)
   const knownPlayers = playersToHear ? playersWithEntityIds(playersToHear) : [];
@@ -78,7 +77,7 @@ export function DemoCard({ demo }: DemoCardProps) {
 
   // True when at least ONE player has a known slot → partial command is possible
   const autoMuteAvailable =
-    (voiceMode === "own_team" || voiceMode === "enemy") &&
+    (voiceMode === "team_t" || voiceMode === "team_ct") &&
     knownPlayers.length > 0;
 
   const fullCommand = buildFullPlayCommand(playdemoArg, voiceMode, playersToHear);
@@ -276,16 +275,22 @@ export function DemoCard({ demo }: DemoCardProps) {
           )}
         </div>
 
-        {/* Player list (collapsible) */}
+        {/* Player list (collapsible debug view — shows team + voice slot) */}
         {showPlayers && rosters && (
           <div className="mb-4 p-3 rounded-lg bg-black/30 border border-white/6">
             <div className="grid grid-cols-2 gap-3">
               {/* Terrorists */}
               <div>
-                <p className="text-yellow-400/60 text-[10px] font-bold uppercase tracking-wider mb-1.5">Terroristen</p>
+                <p className="text-yellow-400/60 text-[10px] font-bold uppercase tracking-wider mb-1.5">Team T</p>
                 <div className="space-y-0.5">
                   {rosters.terrorists.map((p) => (
-                    <p key={p.xuid} className="text-white/55 text-[11px] truncate">{p.name}</p>
+                    <div key={p.xuid || p.name} className="flex items-center gap-1.5">
+                      <span className="text-white/55 text-[11px] truncate">{p.name}</span>
+                      {p.entityId !== undefined
+                        ? <span className="text-yellow-400/50 font-mono text-[9px]">#{p.entityId}</span>
+                        : <span className="text-white/20 font-mono text-[9px]">–</span>
+                      }
+                    </div>
                   ))}
                   {rosters.terrorists.length === 0 && (
                     <p className="text-white/20 text-[11px]">—</p>
@@ -294,10 +299,16 @@ export function DemoCard({ demo }: DemoCardProps) {
               </div>
               {/* Counter-Terrorists */}
               <div>
-                <p className="text-blue-400/60 text-[10px] font-bold uppercase tracking-wider mb-1.5">Counter-T</p>
+                <p className="text-blue-400/60 text-[10px] font-bold uppercase tracking-wider mb-1.5">Team CT</p>
                 <div className="space-y-0.5">
                   {rosters.counterTerrorists.map((p) => (
-                    <p key={p.xuid} className="text-white/55 text-[11px] truncate">{p.name}</p>
+                    <div key={p.xuid || p.name} className="flex items-center gap-1.5">
+                      <span className="text-white/55 text-[11px] truncate">{p.name}</span>
+                      {p.entityId !== undefined
+                        ? <span className="text-blue-400/50 font-mono text-[9px]">#{p.entityId}</span>
+                        : <span className="text-white/20 font-mono text-[9px]">–</span>
+                      }
+                    </div>
                   ))}
                   {rosters.counterTerrorists.length === 0 && (
                     <p className="text-white/20 text-[11px]">—</p>
@@ -305,6 +316,16 @@ export function DemoCard({ demo }: DemoCardProps) {
                 </div>
               </div>
             </div>
+            {/* Bitmask summary */}
+            {parsedPlayers && parsedPlayers.length > 0 && (
+              <div className="mt-2 pt-2 border-t border-white/5">
+                <p className="text-white/20 text-[9px] font-mono">
+                  T-Slots: [{rosters.terrorists.filter(p => p.entityId !== undefined).map(p => p.entityId).join(", ") || "–"}]
+                  {" · "}
+                  CT-Slots: [{rosters.counterTerrorists.filter(p => p.entityId !== undefined).map(p => p.entityId).join(", ") || "–"}]
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -317,7 +338,7 @@ export function DemoCard({ demo }: DemoCardProps) {
           </p>
           <div className="grid grid-cols-4 gap-1">
             {VOICE_OPTIONS.map((opt) => {
-              const needsRoster = opt.mode === "own_team" || opt.mode === "enemy";
+              const needsRoster = opt.mode === "team_t" || opt.mode === "team_ct";
               const hasRoster = needsRoster && rosters !== null;
               // "full" = all slots known; "partial" = some slots known; "list" = roster only; "none" = no data
               const dotStatus = !needsRoster
@@ -360,7 +381,7 @@ export function DemoCard({ demo }: DemoCardProps) {
           </div>
 
           {/* Auto-mute status banner */}
-          {(voiceMode === "own_team" || voiceMode === "enemy") && rosters && (
+          {(voiceMode === "team_t" || voiceMode === "team_ct") && rosters && (
             <div className={cn(
               "mt-2 px-2.5 py-1.5 rounded-lg border text-[10px] flex items-center gap-1.5",
               autoMuteAvailable
@@ -482,8 +503,8 @@ export function DemoCard({ demo }: DemoCardProps) {
           </div>
         )}
 
-        {/* Debug toggle */}
-        {lastOutcome && (
+        {/* Debug toggle — always available when players parsed or after launch */}
+        {(lastOutcome || (parsedPlayers && parsedPlayers.length > 0)) && (
           <div className="mt-2">
             <button
               onClick={() => setShowDebug((v) => !v)}
@@ -491,20 +512,22 @@ export function DemoCard({ demo }: DemoCardProps) {
             >
               {showDebug ? "▲ Debug" : "▼ Debug"}
             </button>
-            {showDebug && (
-              <pre className="mt-1 text-[9px] text-white/45 bg-black/50 p-2 rounded-lg overflow-x-auto leading-relaxed">
-                {JSON.stringify({
-                  isTauri: isTauri(),
-                  cs2Path: settings.cs2Path,
-                  demo: demo.filename,
-                  voiceMode,
-                  playdemoArg,
-                  fullCommand,
-                  parsedPlayers: parsedPlayers?.length ?? "pending",
-                  outcome: lastOutcome,
-                }, null, 2)}
-              </pre>
-            )}
+            {showDebug && (() => {
+              const dbg = buildVoiceDebugInfo(parsedPlayers ?? [], voiceMode, playersToHear ?? null);
+              return (
+                <pre className="mt-1 text-[9px] text-white/45 bg-black/50 p-2 rounded-lg overflow-x-auto leading-relaxed">
+                  {JSON.stringify({
+                    isTauri: isTauri(),
+                    demo: demo.filename,
+                    voiceMode,
+                    fullCommand,
+                    spieler: dbg.players,
+                    bitmask: dbg.bitmask,
+                    outcome: lastOutcome ?? null,
+                  }, null, 2)}
+                </pre>
+              );
+            })()}
           </div>
         )}
       </div>
