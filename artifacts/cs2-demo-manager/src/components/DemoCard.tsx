@@ -21,7 +21,8 @@ import {
   buildRosters,
   getPlayersForMode,
   getPlayersToHear,
-  hasEntityIds,
+  playersWithEntityIds,
+  playersMissingEntityIds,
   type DemoRosters,
 } from "../services/voiceService";
 import { isTauri, tauriParseDemoPlayers, type TauriDemoPlayer } from "../services/tauriBridge";
@@ -71,11 +72,14 @@ export function DemoCard({ demo }: DemoCardProps) {
   // "own_team" → hear own team (bitmask of their slots); "enemy" → hear enemies
   const playersToHear = getPlayersToHear(voiceMode, rosters, userXuid);
 
-  // True when tv_listen_voice_indices can be generated for this mode
+  // Players with and without resolved entity/slot IDs (for the selected mode)
+  const knownPlayers = playersToHear ? playersWithEntityIds(playersToHear) : [];
+  const missingPlayers = playersToHear ? playersMissingEntityIds(playersToHear) : [];
+
+  // True when at least ONE player has a known slot → partial command is possible
   const autoMuteAvailable =
     (voiceMode === "own_team" || voiceMode === "enemy") &&
-    playersToHear !== null &&
-    hasEntityIds(playersToHear);
+    knownPlayers.length > 0;
 
   const fullCommand = buildFullPlayCommand(playdemoArg, voiceMode, playersToHear);
 
@@ -315,14 +319,16 @@ export function DemoCard({ demo }: DemoCardProps) {
             {VOICE_OPTIONS.map((opt) => {
               const needsRoster = opt.mode === "own_team" || opt.mode === "enemy";
               const hasRoster = needsRoster && rosters !== null;
-              // "auto" = roster + entity IDs → full voice_mute; "list" = roster only; "none" = no data
+              // "full" = all slots known; "partial" = some slots known; "list" = roster only; "none" = no data
               const dotStatus = !needsRoster
                 ? "ok"
-                : autoMuteAvailable && voiceMode === opt.mode
-                  ? "auto"
-                  : hasRoster
-                    ? "list"
-                    : "none";
+                : autoMuteAvailable && voiceMode === opt.mode && missingPlayers.length === 0
+                  ? "full"
+                  : autoMuteAvailable && voiceMode === opt.mode && missingPlayers.length > 0
+                    ? "partial"
+                    : hasRoster
+                      ? "list"
+                      : "none";
               return (
                 <button
                   key={opt.mode}
@@ -336,8 +342,11 @@ export function DemoCard({ demo }: DemoCardProps) {
                   )}
                 >
                   {opt.label}
-                  {dotStatus === "auto" && (
-                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-400" title="Automatische Stummschaltung aktiv" />
+                  {dotStatus === "full" && (
+                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-400" title="Alle Spieler erkannt — automatische Stummschaltung aktiv" />
+                  )}
+                  {dotStatus === "partial" && (
+                    <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-yellow-400" title="Teilweise erkannt — Befehl wird mit bekannten Slots generiert" />
                   )}
                   {dotStatus === "list" && (
                     <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-green-700/80" title="Spielerliste verfügbar" />
@@ -355,12 +364,16 @@ export function DemoCard({ demo }: DemoCardProps) {
             <div className={cn(
               "mt-2 px-2.5 py-1.5 rounded-lg border text-[10px] flex items-center gap-1.5",
               autoMuteAvailable
-                ? "bg-green-900/20 border-green-700/30 text-green-300/80"
+                ? missingPlayers.length > 0
+                  ? "bg-yellow-900/20 border-yellow-700/30 text-yellow-300/80"
+                  : "bg-green-900/20 border-green-700/30 text-green-300/80"
                 : "bg-black/20 border-white/6 text-white/30"
             )}>
               <Info className="w-3 h-3 shrink-0" />
               {autoMuteAvailable
-                ? `${playersToHear?.length ?? 0} Spieler werden automatisch gehört (Gegenseite stumm) — Befehl unten kopieren.`
+                ? missingPlayers.length > 0
+                  ? `Sprachfilter teilweise verfügbar: ${knownPlayers.length} von ${(playersToHear?.length ?? 0)} Spielern erkannt — ${missingPlayers.length} Spieler fehlen im Befehl.`
+                  : `${knownPlayers.length} Spieler werden automatisch gehört (Gegenseite stumm) — Befehl unten kopieren.`
                 : "Sprachfilter für diese Demo nicht verfügbar."}
             </div>
           )}
