@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import {
-  Play, FolderOpen, Pencil, Trash2, Check, X, Copy, Loader2,
+  FolderOpen, Pencil, Trash2, Check, X, Copy, Loader2,
   Volume2, Info, Users, ChevronDown, ChevronUp,
 } from "lucide-react";
 import type { Demo } from "../types/demo";
@@ -9,11 +9,8 @@ import { formatFileSize, formatDate, openDemoFolder } from "../services/demoServ
 import {
   buildPlaydemoArg,
   copyToClipboard,
-  getCS2Status,
-  verifyCS2PathExists,
-  launchDemoInCS2,
 } from "../services/cs2Service";
-import type { LaunchOutcome } from "../services/cs2Service";
+import { getCachedPlayers, setCachedPlayers } from "../services/parsedPlayersCache";
 import {
   type VoiceMode,
   VOICE_OPTIONS,
@@ -47,19 +44,15 @@ export function DemoCard({ demo }: DemoCardProps) {
   // Clipboard
   const [cmdCopied, setCmdCopied] = useState(false);
   const [lastCmd, setLastCmd] = useState<string | null>(null);
-
-  // Launch
-  const [launching, setLaunching] = useState(false);
-  const [lastOutcome, setLastOutcome] = useState<LaunchOutcome | null>(null);
   const [showDebug, setShowDebug] = useState(false);
 
   // Demo parser
-  const [parsedPlayers, setParsedPlayers] = useState<TauriDemoPlayer[] | null>(null);
+  const [parsedPlayers, setParsedPlayers] = useState<TauriDemoPlayer[] | null>(() =>
+    demo.filepath ? getCachedPlayers(demo.filepath) : null
+  );
   const [parsing, setParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [showPlayers, setShowPlayers] = useState(false);
-
-  const cs2Status = getCS2Status(settings.cs2Path);
   const playdemoArg = buildPlaydemoArg(demo.filename);
 
   // Computed rosters from parsed players — team split uses m_iTeamNum from demo only
@@ -82,12 +75,15 @@ export function DemoCard({ demo }: DemoCardProps) {
 
   const fullCommand = buildFullPlayCommand(playdemoArg, voiceMode, playersToHear);
 
-  // ── Parse demo on mount (Tauri only) ─────────────────────────────────────
+  // ── Parse demo on mount (Tauri only) — uses module-level cache ───────────
   useEffect(() => {
-    if (!isTauri() || !demo.filepath || parsedPlayers !== null || parsing) return;
+    if (!isTauri() || !demo.filepath) return;
+    if (getCachedPlayers(demo.filepath) !== null) return; // already cached
+    if (parsedPlayers !== null || parsing) return;
     setParsing(true);
     tauriParseDemoPlayers(demo.filepath)
       .then((players) => {
+        setCachedPlayers(demo.filepath!, players);
         setParsedPlayers(players);
         setParseError(null);
       })
@@ -110,48 +106,6 @@ export function DemoCard({ demo }: DemoCardProps) {
     if (copied) {
       setStatus({ type: "success", message: "Befehl wurde in die Zwischenablage kopiert." });
       setTimeout(() => setCmdCopied(false), 3000);
-    }
-  }
-
-  // ── Launch CS2 ───────────────────────────────────────────────────────────
-  async function handleLaunch() {
-    if (cs2Status !== "found") {
-      setStatus({
-        type: "error",
-        message: "CS2 wurde nicht gefunden. Bitte den CS2-Pfad in den Einstellungen festlegen.",
-      });
-      return;
-    }
-    setLaunching(true);
-    try {
-      if (isTauri()) {
-        const exists = await verifyCS2PathExists(settings.cs2Path);
-        if (!exists) {
-          setStatus({ type: "error", message: "CS2-Pfad ungültig. Bitte Einstellungen prüfen." });
-          setLaunching(false);
-          return;
-        }
-      }
-      if (fullCommand) {
-        await copyToClipboard(fullCommand);
-        setCmdCopied(true);
-        setLastCmd(fullCommand);
-      }
-      let outcome: LaunchOutcome;
-      try {
-        outcome = await launchDemoInCS2(demo.filename, settings.cs2Path);
-      } catch {
-        outcome = { status: "clipboard_fallback", method: "none", consoleCmd: fullCommand ?? `playdemo ${playdemoArg}`, steamUri: "" };
-      }
-      setLastOutcome(outcome);
-      setStatus({
-        type: "info",
-        message: outcome.status === "launched"
-          ? (outcome.note ?? "CS2 / Steam gestartet. Befehl in die Konsole einfügen.")
-          : "Befehl kopiert — öffne CS2, drücke ~ und füge ein.",
-      });
-    } finally {
-      setLaunching(false);
     }
   }
 
@@ -443,34 +397,12 @@ export function DemoCard({ demo }: DemoCardProps) {
               "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed",
               cmdCopied
                 ? "bg-green-600 text-white"
-                : "bg-white/8 hover:bg-white/15 border border-white/12 text-white/80 hover:text-white"
+                : "bg-orange-500 hover:bg-orange-400 active:bg-orange-600 text-white"
             )}
           >
             {cmdCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
             {cmdCopied ? "Kopiert!" : "Befehl kopieren"}
           </button>
-
-          {isTauri() ? (
-            <button
-              onClick={handleLaunch}
-              disabled={launching || cs2Status !== "found"}
-              title={cs2Status !== "found" ? "CS2 nicht konfiguriert" : "CS2 / Steam öffnen und Befehl kopieren"}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-400 active:bg-orange-600 text-white text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {launching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-              In CS2 öffnen
-            </button>
-          ) : (
-            <button
-              onClick={handleCopyCommand}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-white/10 bg-white/3 text-white/30 text-sm font-medium cursor-default select-none"
-              title="Nur in der Desktop-App verfügbar"
-            >
-              <Play className="w-3.5 h-3.5" />
-              In CS2 öffnen
-              <span className="text-xs text-white/20">(nur Desktop)</span>
-            </button>
-          )}
         </div>
 
         {/* Copied command panel */}
@@ -490,21 +422,11 @@ export function DemoCard({ demo }: DemoCardProps) {
                 <Copy className="w-3 h-3" />
               </button>
             </div>
-            {lastOutcome && (
-              <p className="mt-1.5 text-[10px] text-white/30">
-                Methode: <span className="text-white/50">{lastOutcome.method ?? "–"}</span>
-                {" · "}
-                Status:{" "}
-                <span className={lastOutcome.status === "launched" ? "text-green-400/70" : "text-yellow-400/70"}>
-                  {lastOutcome.status === "launched" ? "Gestartet" : "Nur Befehl kopiert"}
-                </span>
-              </p>
-            )}
           </div>
         )}
 
-        {/* Debug toggle — always available when players parsed or after launch */}
-        {(lastOutcome || (parsedPlayers && parsedPlayers.length > 0)) && (
+        {/* Debug toggle */}
+        {parsedPlayers && parsedPlayers.length > 0 && (
           <div className="mt-2">
             <button
               onClick={() => setShowDebug((v) => !v)}
@@ -523,7 +445,6 @@ export function DemoCard({ demo }: DemoCardProps) {
                     fullCommand,
                     spieler: dbg.players,
                     bitmask: dbg.bitmask,
-                    outcome: lastOutcome ?? null,
                   }, null, 2)}
                 </pre>
               );

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import {
-  Play, FolderOpen, Loader2, CheckCircle2,
+  FolderOpen, Loader2, CheckCircle2,
   Calendar, Map, Copy, Check, Users, Volume2, Info, ExternalLink,
 } from "lucide-react";
 import type { FaceitHistoryItem } from "../types/faceit";
@@ -16,8 +16,8 @@ import {
 import {
   buildPlaydemoArg,
   copyToClipboard,
-  launchDemoInCS2,
 } from "../services/cs2Service";
+import { getCachedPlayers, setCachedPlayers } from "../services/parsedPlayersCache";
 import {
   type VoiceMode,
   VOICE_OPTIONS,
@@ -56,20 +56,27 @@ export function MatchCard({ match }: MatchCardProps) {
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("all");
   const [showDebug, setShowDebug] = useState(false);
   const [cmdCopied, setCmdCopied] = useState(false);
-  const [launching, setLaunching] = useState(false);
 
-  // Demo player parser (entity IDs for tv_listen_voice_indices)
-  const [parsedPlayers, setParsedPlayers] = useState<TauriDemoPlayer[] | null>(null);
+  // Demo player parser — init from module-level cache (instant if already parsed)
+  const existingDemoForCache = isTauri() ? findDownloadedDemo(match.match_id) : null;
+  const [parsedPlayers, setParsedPlayers] = useState<TauriDemoPlayer[] | null>(() =>
+    existingDemoForCache?.filepath ? getCachedPlayers(existingDemoForCache.filepath) : null
+  );
   const [parsing, setParsing] = useState(false);
 
   // Auto-parse on mount if this demo was already processed in a previous session
   useEffect(() => {
     if (!isTauri()) return;
     const existingDemo = findDownloadedDemo(match.match_id);
-    if (!existingDemo?.filepath || parsedPlayers !== null || parsing) return;
+    if (!existingDemo?.filepath) return;
+    if (getCachedPlayers(existingDemo.filepath) !== null) return; // already cached
+    if (parsedPlayers !== null || parsing) return;
     setParsing(true);
     tauriParseDemoPlayers(existingDemo.filepath)
-      .then((players) => setParsedPlayers(players))
+      .then((players) => {
+        setCachedPlayers(existingDemo.filepath!, players);
+        setParsedPlayers(players);
+      })
       .catch(() => setParsedPlayers([]))
       .finally(() => setParsing(false));
   }, [match.match_id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -146,42 +153,6 @@ export function MatchCard({ match }: MatchCardProps) {
     if (copied) {
       setStatus({ type: "success", message: "Befehl wurde in die Zwischenablage kopiert." });
       setTimeout(() => setCmdCopied(false), 3000);
-    }
-  }
-
-  // ── Launch CS2 + copy (best effort) ──────────────────────────────────────
-  async function handleWatch() {
-    if (!existingDemo) return;
-
-    if (!isTauri()) {
-      await handleCopyCommand();
-      setStatus({
-        type: "info",
-        message: "Befehl kopiert. In CS2 starten ist nur in der Desktop-App verfügbar.",
-      });
-      return;
-    }
-
-    setLaunching(true);
-    try {
-      if (fullCommand) {
-        await copyToClipboard(fullCommand);
-        setCmdCopied(true);
-      }
-      const outcome = await launchDemoInCS2(existingDemo.filename, settings.cs2Path);
-      setStatus({
-        type: "info",
-        message: outcome.status === "launched"
-          ? (outcome.note ?? "CS2 / Steam gestartet. Befehl in die Konsole einfügen.")
-          : "Befehl kopiert — öffne CS2, drücke ~ und füge ein.",
-      });
-    } catch {
-      setStatus({
-        type: "info",
-        message: "CS2 konnte nicht gestartet werden. Befehl wurde kopiert — bitte manuell einfügen.",
-      });
-    } finally {
-      setLaunching(false);
     }
   }
 
@@ -459,20 +430,6 @@ export function MatchCard({ match }: MatchCardProps) {
                 {cmdCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                 {cmdCopied ? "Kopiert!" : "Befehl kopieren"}
               </button>
-
-              {/* Launch in CS2 (Tauri only) */}
-              {isTauri() && (
-                <button
-                  onClick={handleWatch}
-                  disabled={launching}
-                  className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-orange-500 hover:bg-orange-400 active:bg-orange-600 text-white text-sm font-medium transition-colors disabled:opacity-40"
-                >
-                  {launching
-                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    : <Play className="w-3.5 h-3.5" />}
-                  In CS2 öffnen
-                </button>
-              )}
 
               <button
                 onClick={() => navigate("/library")}
