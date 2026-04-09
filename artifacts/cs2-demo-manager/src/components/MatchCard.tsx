@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   Download, Play, FolderOpen, Loader2, CheckCircle2, AlertCircle,
-  Calendar, Map, Trophy, Copy, Check, Users, Volume2, Info,
+  Calendar, Map, Trophy, Copy, Check, Users, Volume2,
 } from "lucide-react";
 import type { FaceitHistoryItem } from "../types/faceit";
 import { useFaceit } from "../context/FaceitContext";
@@ -325,7 +325,7 @@ export function MatchCard({ match }: MatchCardProps) {
                     onClick={() => setVoiceMode(opt.mode)}
                     title={hasFaceitRoster
                       ? `${opt.description} — FACEIT-Spielerliste verfügbar`
-                      : (opt.notImplementedNote ?? opt.description)}
+                      : opt.description}
                     className={cn(
                       "relative px-2 py-1.5 rounded-lg border text-xs font-medium transition-all",
                       voiceMode === opt.mode
@@ -334,11 +334,9 @@ export function MatchCard({ match }: MatchCardProps) {
                     )}
                   >
                     {opt.label}
-                    {hasFaceitRoster ? (
+                    {hasFaceitRoster && (
                       <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-green-500/80" title="FACEIT-Spielerliste verfügbar" />
-                    ) : !opt.implemented ? (
-                      <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-yellow-500/80" />
-                    ) : null}
+                    )}
                   </button>
                 );
               })}
@@ -359,15 +357,6 @@ export function MatchCard({ match }: MatchCardProps) {
                   Tipp: Spieler manuell in CS2 über die Scoreboard-Stummschaltung deaktivieren.
                 </p>
               </div>
-            )}
-
-            {/* Note for modes without roster data */}
-            {voiceMode !== "own_team" && voiceMode !== "enemy" &&
-              VOICE_OPTIONS.find((o) => o.mode === voiceMode)?.notImplementedNote && (
-              <p className="mt-1.5 text-[10px] text-yellow-400/60 flex items-center gap-1">
-                <Info className="w-3 h-3 shrink-0" />
-                {VOICE_OPTIONS.find((o) => o.mode === voiceMode)?.notImplementedNote}
-              </p>
             )}
 
             {fullCommand && (
