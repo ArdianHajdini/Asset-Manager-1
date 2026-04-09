@@ -2,26 +2,22 @@
  * voiceService.ts — CS2 voice mode selection and command generation.
  *
  * Modes:
- *   "all"       → voice_enable 1                                    (always)
- *   "none"      → voice_enable 0                                    (always)
+ *   "all"       → voice_enable 1; tv_listen_voice_indices -1; tv_listen_voice_indices_h -1
+ *   "none"      → voice_enable 0
  *   "own_team"  → tv_listen_voice_indices <bitmask of own-team slots>
  *   "enemy"     → tv_listen_voice_indices <bitmask of enemy slots>
  *
+ * PARTIAL MATCHING:
+ *   For own_team / enemy mode a command is generated as long as at least
+ *   ONE player has a known entityId. The bitmask is built from the known
+ *   players only. A warning is shown for missing players but no command is
+ *   suppressed. Only when ZERO players have entityIds is null returned.
+ *
  * Player slot numbers (entityId) come from the CDemoStringTables "userinfo"
- * string table inside the .dem file. The Rust parser extracts them and
- * exposes them as TauriDemoPlayer.entityId (optional — absent when parsing
- * failed).
+ * string table inside the .dem file (Rust parser → TauriDemoPlayer.entityId).
  *
  * tv_listen_voice_indices takes a bitmask where bit N = hear player at slot N.
- * This is a positive selection: you specify exactly who you want to HEAR.
- *
- * When entityId values are present the generated command looks like:
- *   tv_listen_voice_indices 164; playdemo replays/matchname
- *   (164 = (1<<2)|(1<<5)|(1<<7) — slots 2, 5 and 7 are heard)
- *
- * When entityId values are absent for "own_team" / "enemy" mode, no voice
- * filter command can be generated. buildFullPlayCommand returns null in that
- * case. The UI should block or label those modes as unavailable.
+ * tv_listen_voice_indices_h covers slots 32–63 (always 0 in CS2 matches).
  */
 
 import type { TauriDemoPlayer } from "./tauriBridge";
@@ -127,12 +123,7 @@ export function getPlayersForMode(
 
 /**
  * Return the players that the user WANTS TO HEAR for a given voice mode.
- * - "own_team" → hear your own team (enemies are silenced)
- * - "enemy"    → hear the enemies (own team is silenced)
  * Returns null for "all" / "none" (no per-player selection needed).
- *
- * The returned players' entityId values are used to build the
- * tv_listen_voice_indices bitmask.
  */
 export function getPlayersToHear(
   mode: VoiceMode,
@@ -142,17 +133,27 @@ export function getPlayersToHear(
   if (!rosters) return null;
   const { ownTeam, enemyTeam } = splitTeams(rosters, userXuid);
   switch (mode) {
-    case "own_team": return ownTeam;    // hear own team
-    case "enemy":    return enemyTeam;  // hear enemies
+    case "own_team": return ownTeam;
+    case "enemy":    return enemyTeam;
     default:         return null;
   }
 }
 
 // ── Entity-ID helpers ───────────────────────────────────────────────────────
 
+/** Players that have a resolved entity/slot ID. */
+export function playersWithEntityIds(players: TauriDemoPlayer[]): TauriDemoPlayer[] {
+  return players.filter((p) => p.entityId !== undefined);
+}
+
+/** Players whose entity/slot ID could not be resolved. */
+export function playersMissingEntityIds(players: TauriDemoPlayer[]): TauriDemoPlayer[] {
+  return players.filter((p) => p.entityId === undefined);
+}
+
 /**
- * Returns true when every player in the array has a known entityId.
- * Used to decide whether tv_listen_voice_indices can be generated.
+ * @deprecated Use playersWithEntityIds(players).length > 0 instead.
+ * Kept for any external callers; internally no longer used.
  */
 export function hasEntityIds(players: TauriDemoPlayer[]): boolean {
   return players.length > 0 && players.every((p) => p.entityId !== undefined);
@@ -160,17 +161,19 @@ export function hasEntityIds(players: TauriDemoPlayer[]): boolean {
 
 /**
  * Compute the tv_listen_voice_indices bitmask for the given players.
+ * Only players with a known entityId contribute to the bitmask.
  * Bit N is set when the player at slot N should be heard.
  * Example: slots [2, 5, 7] → (1<<2)|(1<<5)|(1<<7) = 164
  *
- * JS bitwise operators are 32-bit, so slots > 30 would overflow.
- * CS2 demos have at most 10 players per side (slots 0–9), so this
- * guard is purely defensive.
+ * JS bitwise operators are 32-bit signed; slots > 30 would overflow.
+ * CS2 demos have at most 10 players per side (slots 0–9) so this guard
+ * is purely defensive.
  */
 export function buildVoiceIndexBitmask(players: TauriDemoPlayer[]): number {
   return players.reduce((acc, p) => {
+    if (p.entityId === undefined) return acc;
     const slot = p.entityId as number;
-    if (slot > 30) return acc; // guard: skip implausibly large slot numbers
+    if (slot > 30) return acc;
     return acc | (1 << slot);
   }, 0);
 }
@@ -180,18 +183,13 @@ export function buildVoiceIndexBitmask(players: TauriDemoPlayer[]): number {
 /**
  * Build the CS2 console voice-setup commands for the selected mode.
  *
- * Returns null for "own_team" / "enemy" when entityIds are unavailable —
- * the caller must treat null as "filter unavailable" and NOT generate a
- * fake voice_enable command that would mislead the user.
+ * PARTIAL SUCCESS: for own_team / enemy, returns a command as long as at
+ * least ONE player has a resolved entityId. Missing players are simply
+ * absent from the bitmask — the caller should warn the user.
+ * Returns null only when ZERO players have entityIds.
  *
  * @param mode           - Voice mode selected by the user.
  * @param playersToHear  - Players the user wants to HEAR (their own side).
- *
- * Examples:
- *   "none"                               → "voice_enable 0"
- *   "all"                                → "voice_enable 1"
- *   "own_team" with entity IDs (2,5,7)   → "tv_listen_voice_indices 164; tv_listen_voice_indices_h 0"
- *   "own_team" without IDs               → null  (filter unavailable)
  */
 export function buildVoiceCommands(
   mode: VoiceMode,
@@ -202,13 +200,14 @@ export function buildVoiceCommands(
       return "voice_enable 0";
 
     case "all":
-      return "voice_enable 1";
+      return "voice_enable 1; tv_listen_voice_indices -1; tv_listen_voice_indices_h -1";
 
     case "own_team":
     case "enemy": {
-      if (!playersToHear || !hasEntityIds(playersToHear)) return null;
-      const bitmask = buildVoiceIndexBitmask(playersToHear);
-      // Send both low-bits and high-bits variant (h = slots 32–63, always 0 in CS2).
+      if (!playersToHear) return null;
+      const known = playersWithEntityIds(playersToHear);
+      if (known.length === 0) return null;
+      const bitmask = buildVoiceIndexBitmask(known);
       return `tv_listen_voice_indices ${bitmask}; tv_listen_voice_indices_h 0`;
     }
   }
@@ -218,9 +217,7 @@ export function buildVoiceCommands(
  * Build the full CS2 console command:
  *   <voiceSetup>; playdemo <playdemoArg>
  *
- * Returns null when the selected voice mode requires entity IDs that are
- * not available. The UI must handle null by hiding the command and blocking
- * the copy button for that mode.
+ * Returns null only when voiceMode requires entityIds and ZERO are available.
  */
 export function buildFullPlayCommand(
   playdemoArg: string,
