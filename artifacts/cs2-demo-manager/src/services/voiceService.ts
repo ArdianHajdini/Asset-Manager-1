@@ -2,16 +2,20 @@
  * voiceService.ts — CS2 voice mode selection and command generation.
  *
  * Modes:
- *   "all"       → voice_enable 1                  (fully implemented)
- *   "none"      → voice_enable 0                  (fully implemented)
- *   "own_team"  → voice_enable 1 + player list    (demo parser supplies names & teams)
- *   "enemy"     → voice_enable 1 + player list    (demo parser supplies names & teams)
+ *   "all"       → voice_enable 1                              (always implemented)
+ *   "none"      → voice_enable 0                              (always implemented)
+ *   "own_team"  → voice_mute <slot>... for every enemy        (needs entityId in roster)
+ *   "enemy"     → voice_mute <slot>... for every own player   (needs entityId in roster)
  *
- * NOTE on per-player muting in CS2:
- *   CS2's voice_mute command uses the in-game entity user ID (a small integer), NOT a
- *   Steam ID. The entity IDs are available in the demo entity data — not in the
- *   CDemoFileInfo summary we parse. So we display the correct player names, but
- *   actual per-player muting requires entity IDs (a future enhancement).
+ * voice_mute slot numbers come from the CDemoStringTables "userinfo" string table
+ * inside the .dem file. The Rust parser extracts them and exposes them as
+ * TauriDemoPlayer.entityId (optional — absent when parsing failed).
+ *
+ * When entityId values are present the generated command looks like:
+ *   voice_mute 2; voice_mute 5; voice_mute 7; playdemo replays/matchname
+ *
+ * When entityId values are absent the mode still shows the correct player list
+ * (name / team) so the user can mute manually via the CS2 scoreboard.
  */
 
 import type { TauriDemoPlayer } from "./tauriBridge";
@@ -22,9 +26,6 @@ export interface VoiceOption {
   mode: VoiceMode;
   label: string;
   description: string;
-  /** true = fully implemented; false = informational only (no muting) */
-  implemented: boolean;
-  notImplementedNote?: string;
 }
 
 export const VOICE_OPTIONS: VoiceOption[] = [
@@ -32,33 +33,25 @@ export const VOICE_OPTIONS: VoiceOption[] = [
     mode: "all",
     label: "Alle hören",
     description: "Alle Spielerstimmen aktiviert",
-    implemented: true,
   },
   {
     mode: "none",
     label: "Kein Voice",
     description: "Alle Stimmen deaktiviert",
-    implemented: true,
   },
   {
     mode: "own_team",
     label: "Eigenes Team",
-    description: "Zeigt das eigene Team — manuelle Stummschaltung nötig",
-    implemented: false,
-    notImplementedNote:
-      "CS2 benötigt Entity-IDs für voice_mute — Demo-Parser liefert die Spielerliste.",
+    description: "Nur das eigene Team hören — Gegner werden stummgeschaltet",
   },
   {
     mode: "enemy",
     label: "Gegner",
-    description: "Zeigt die Gegner — manuelle Stummschaltung nötig",
-    implemented: false,
-    notImplementedNote:
-      "CS2 benötigt Entity-IDs für voice_mute — Demo-Parser liefert die Spielerliste.",
+    description: "Nur Gegner hören — eigenes Team wird stummgeschaltet",
   },
 ];
 
-// ── Roster from the demo parser ────────────────────────────────────────────
+// ── Roster helpers ──────────────────────────────────────────────────────────
 
 /** Categorised player rosters for a demo, derived from TauriDemoPlayer[]. */
 export interface DemoRosters {
@@ -95,7 +88,7 @@ export function getUserTeam(
 
 /**
  * Return the "own team" and "enemy team" player arrays for a given user.
- * Falls back to T/CT split if the user's team is not identifiable.
+ * Falls back to T/CT split when the user's team cannot be identified.
  */
 export function splitTeams(
   rosters: DemoRosters,
@@ -108,44 +101,10 @@ export function splitTeams(
   if (side === "CT") {
     return { ownTeam: rosters.counterTerrorists, enemyTeam: rosters.terrorists };
   }
-  // Can't determine → return T as ownTeam by convention
   return { ownTeam: rosters.terrorists, enemyTeam: rosters.counterTerrorists };
 }
 
-// ── Command builder ────────────────────────────────────────────────────────
-
-/**
- * Build the CS2 console voice command for the selected mode.
- *
- * With real entity IDs (future): voice_mute per player.
- * Today: voice_enable 0/1 for all/none; display-only for own_team/enemy.
- */
-export function buildVoiceCommands(mode: VoiceMode): string {
-  switch (mode) {
-    case "none":
-      return "voice_enable 0";
-    case "all":
-    case "own_team":
-    case "enemy":
-      return "voice_enable 1";
-  }
-}
-
-/**
- * Build the full CS2 console command:
- *   <voiceSetup>; playdemo <playdemoArg>
- */
-export function buildFullPlayCommand(playdemoArg: string, voiceMode: VoiceMode): string {
-  const voiceCmd = buildVoiceCommands(voiceMode);
-  return `${voiceCmd}; playdemo ${playdemoArg}`;
-}
-
-/** Human-readable label for a mode (German). */
-export function voiceModeLabel(mode: VoiceMode): string {
-  return VOICE_OPTIONS.find((o) => o.mode === mode)?.label ?? mode;
-}
-
-/** Return the relevant player list for a given mode (to show in the UI). */
+/** Return the relevant player list to DISPLAY for a given voice mode. */
 export function getPlayersForMode(
   mode: VoiceMode,
   rosters: DemoRosters | null,
@@ -154,11 +113,95 @@ export function getPlayersForMode(
   if (!rosters) return null;
   const { ownTeam, enemyTeam } = splitTeams(rosters, userXuid);
   switch (mode) {
-    case "own_team":
-      return ownTeam;
-    case "enemy":
-      return enemyTeam;
-    default:
-      return null;
+    case "own_team": return ownTeam;
+    case "enemy":    return enemyTeam;
+    default:         return null;
   }
+}
+
+/**
+ * Return the players that should be MUTED for a given voice mode.
+ * - "own_team" → mute enemies so only your team is heard
+ * - "enemy"    → mute your team so only the enemies are heard
+ * Returns null for "all" / "none" (no per-player muting needed).
+ */
+export function getPlayersToMute(
+  mode: VoiceMode,
+  rosters: DemoRosters | null,
+  userXuid?: string
+): TauriDemoPlayer[] | null {
+  if (!rosters) return null;
+  const { ownTeam, enemyTeam } = splitTeams(rosters, userXuid);
+  switch (mode) {
+    case "own_team": return enemyTeam;   // mute enemies
+    case "enemy":    return ownTeam;     // mute own team
+    default:         return null;
+  }
+}
+
+// ── Entity-ID helpers ───────────────────────────────────────────────────────
+
+/**
+ * Returns true when every player in the array has a known entityId.
+ * Used to decide whether automatic voice_mute commands can be generated.
+ */
+export function hasEntityIds(players: TauriDemoPlayer[]): boolean {
+  return players.length > 0 && players.every((p) => p.entityId !== undefined);
+}
+
+// ── Command builder ─────────────────────────────────────────────────────────
+
+/**
+ * Build the CS2 console voice-setup commands for the selected mode.
+ *
+ * @param mode          - Voice mode selected by the user.
+ * @param playersToMute - Players whose voices should be muted (the "other side").
+ *                        When all players have entityId, real voice_mute commands
+ *                        are generated. Otherwise falls back to voice_enable 1.
+ *
+ * Examples:
+ *   "none"      → "voice_enable 0"
+ *   "all"       → "voice_enable 1"
+ *   "own_team" with entity IDs → "voice_enable 1; voice_mute 2; voice_mute 7"
+ *   "own_team" without IDs     → "voice_enable 1"
+ */
+export function buildVoiceCommands(
+  mode: VoiceMode,
+  playersToMute?: TauriDemoPlayer[] | null
+): string {
+  switch (mode) {
+    case "none":
+      return "voice_enable 0";
+
+    case "all":
+      return "voice_enable 1";
+
+    case "own_team":
+    case "enemy": {
+      const base = "voice_enable 1";
+      if (!playersToMute || !hasEntityIds(playersToMute)) return base;
+      const muteCmds = playersToMute
+        .map((p) => `voice_mute ${p.entityId}`)
+        .join("; ");
+      return `${base}; ${muteCmds}`;
+    }
+  }
+}
+
+/**
+ * Build the full CS2 console command:
+ *   <voiceSetup>; playdemo <playdemoArg>
+ */
+export function buildFullPlayCommand(
+  playdemoArg: string,
+  voiceMode: VoiceMode,
+  playersToMute?: TauriDemoPlayer[] | null
+): string {
+  const voiceCmd = buildVoiceCommands(voiceMode, playersToMute);
+  return `${voiceCmd}; playdemo ${playdemoArg}`;
+}
+
+/** Human-readable label for a mode (German). */
+export function voiceModeLabel(mode: VoiceMode): string {
+  return VOICE_OPTIONS.find((o) => o.mode === mode)?.label ?? mode;
 }
