@@ -97,6 +97,10 @@ export function DemoCard({ demo }: DemoCardProps) {
 
   // ── Copy command ─────────────────────────────────────────────────────────
   async function handleCopyCommand() {
+    if (!fullCommand) {
+      setStatus({ type: "error", message: "Sprachfilter für diesen Modus nicht verfügbar — Demo-Daten fehlen." });
+      return;
+    }
     const copied = await copyToClipboard(fullCommand);
     setCmdCopied(copied);
     setLastCmd(fullCommand);
@@ -125,14 +129,16 @@ export function DemoCard({ demo }: DemoCardProps) {
           return;
         }
       }
-      await copyToClipboard(fullCommand);
-      setCmdCopied(true);
-      setLastCmd(fullCommand);
+      if (fullCommand) {
+        await copyToClipboard(fullCommand);
+        setCmdCopied(true);
+        setLastCmd(fullCommand);
+      }
       let outcome: LaunchOutcome;
       try {
         outcome = await launchDemoInCS2(demo.filename, settings.cs2Path);
       } catch {
-        outcome = { status: "clipboard_fallback", method: "none", consoleCmd: fullCommand, steamUri: "" };
+        outcome = { status: "clipboard_fallback", method: "none", consoleCmd: fullCommand ?? `playdemo ${playdemoArg}`, steamUri: "" };
       }
       setLastOutcome(outcome);
       setStatus({
@@ -355,7 +361,7 @@ export function DemoCard({ demo }: DemoCardProps) {
               <Info className="w-3 h-3 shrink-0" />
               {autoMuteAvailable
                 ? `${playersToHear?.length ?? 0} Spieler werden automatisch gehört (Gegenseite stumm) — Befehl unten kopieren.`
-                : "Spieler-IDs nicht gefunden — Stummschaltung manuell über das CS2-Scoreboard."}
+                : "Sprachfilter für diese Demo nicht verfügbar."}
             </div>
           )}
 
@@ -379,8 +385,17 @@ export function DemoCard({ demo }: DemoCardProps) {
 
         {/* Command preview */}
         <div className="mb-3 flex items-center gap-2 bg-black/40 rounded-lg px-3 py-2">
-          <code className="flex-1 font-mono text-xs text-orange-300/80 truncate">{fullCommand}</code>
-          <button onClick={handleCopyCommand} title="Befehl kopieren" className="shrink-0 text-white/30 hover:text-orange-400 transition-colors">
+          {fullCommand ? (
+            <code className="flex-1 font-mono text-xs text-orange-300/80 truncate">{fullCommand}</code>
+          ) : (
+            <span className="flex-1 text-xs text-white/25 italic">Sprachfilter nicht verfügbar — Demo-Daten fehlen.</span>
+          )}
+          <button
+            onClick={handleCopyCommand}
+            disabled={!fullCommand}
+            title={fullCommand ? "Befehl kopieren" : "Kein Befehl verfügbar"}
+            className="shrink-0 text-white/30 hover:text-orange-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          >
             {cmdCopied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
           </button>
         </div>
@@ -389,8 +404,9 @@ export function DemoCard({ demo }: DemoCardProps) {
         <div className="flex items-center gap-2">
           <button
             onClick={handleCopyCommand}
+            disabled={!fullCommand}
             className={cn(
-              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150",
+              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed",
               cmdCopied
                 ? "bg-green-600 text-white"
                 : "bg-white/8 hover:bg-white/15 border border-white/12 text-white/80 hover:text-white"
