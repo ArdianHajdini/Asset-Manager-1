@@ -519,7 +519,7 @@ export function MatchCard({ match }: MatchCardProps) {
               {/* Copy command — primary */}
               <button
                 onClick={handleCopyCommand}
-                disabled={!fullCommand && !!playdemoArg && (voiceMode === "own_team" || voiceMode === "enemy")}
+                disabled={!fullCommand && !!playdemoArg && (voiceMode === "team_t" || voiceMode === "team_ct")}
                 title={!fullCommand && playdemoArg ? "Sprachfilter nicht verfügbar — Demo-Daten fehlen" : undefined}
                 className={cn(
                   "flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed",
