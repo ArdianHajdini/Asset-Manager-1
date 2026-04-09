@@ -802,6 +802,28 @@ pub mod commands {
 
     // ── Voice-slot parser (CDemoStringTables → userinfo) ──────────────────
 
+    /// Normalize a player name for case-insensitive, whitespace-tolerant matching.
+    /// Trims leading/trailing whitespace, lowercases, and collapses inner runs of
+    /// whitespace to a single space — matching the behaviour specified in Task #3.
+    fn normalize_name(s: &str) -> String {
+        s.trim()
+            .to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Both lookup maps extracted from the CDemoStringTables "userinfo" table.
+    ///
+    /// Primary:  xuid_to_slot  — filled from the CCSPlayerInfo `data` field.
+    ///           May be empty for FACEIT demos where GOTV bots omit Steam ID64s.
+    /// Fallback: name_to_slot  — filled from the `str` key field (player name).
+    ///           Duplicates are excluded; wrong assignment is worse than no assignment.
+    struct UserInfoMaps {
+        xuid_to_slot: std::collections::HashMap<String, u32>,
+        name_to_slot: std::collections::HashMap<String, u32>,
+    }
+
     /// Parse a CCSPlayerInfo entry from the `userinfo` string table data blob.
     ///
     /// CS2 public proto (CCSPlayerInfo):
@@ -829,23 +851,23 @@ pub mod commands {
         Some(xuid.to_string())
     }
 
-    /// Parse a CDemoStringTables proto body and return a xuid → voice_slot map.
+    /// Parse a CDemoStringTables proto body and return both lookup maps.
     ///
     /// CDemoStringTables structure (field numbers):
     ///   1: repeated table_t {
     ///     1: string  table_name
     ///     2: repeated items_t {
-    ///       1: string  str   (key / player name slot — may be empty)
-    ///       2: bytes   data  (CCSPlayerInfo proto)
+    ///       1: string  str   (player name key)
+    ///       2: bytes   data  (CCSPlayerInfo proto — xuid may be 0 in FACEIT demos)
     ///     }
     ///   }
     ///
-    /// The position (0-based index) of each item within the "userinfo" table IS
-    /// the argument to pass to CS2's `voice_mute <slot>` command.
-    fn extract_userinfo_slots(body: &[u8]) -> std::collections::HashMap<String, u32> {
-        let mut result = std::collections::HashMap::new();
+    /// The 0-based index of each item within the "userinfo" table is the voice slot.
+    fn extract_userinfo_slots(body: &[u8]) -> UserInfoMaps {
+        let mut xuid_to_slot: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut name_slot_raw: Vec<(String, u32)> = Vec::new();
 
-        for (f1, v1) in pb_fields(body) {
+        'tables: for (f1, v1) in pb_fields(body) {
             if f1 != 1 { continue; }
             let PbVal::Bytes(table_bytes) = v1 else { continue };
             let table_fields = pb_fields(&table_bytes);
@@ -857,33 +879,79 @@ pub mod commands {
             });
             if !is_userinfo { continue; }
 
-            // Collect items (field 2) in order — their index is the voice slot
+            // Collect items (field 2) in order — index = voice slot
             let mut slot: u32 = 0;
             for (f2, v2) in table_fields {
                 if f2 != 2 { continue; }
                 let PbVal::Bytes(item_bytes) = v2 else { slot += 1; continue };
 
-                // items_t: field 2 = data (CCSPlayerInfo)
+                // items_t:  field 1 = str (name key)  ·  field 2 = data (CCSPlayerInfo)
+                let mut item_name = String::new();
+                let mut item_xuid: Option<String> = None;
+
                 for (f3, v3) in pb_fields(&item_bytes) {
-                    if f3 != 2 { continue; }
-                    let PbVal::Bytes(player_data) = v3 else { continue };
-                    if let Some(xuid_str) = parse_userinfo_xuid(&player_data) {
-                        result.insert(xuid_str, slot);
+                    match (f3, v3) {
+                        (1, PbVal::Bytes(b)) => {
+                            item_name = String::from_utf8_lossy(&b).into_owned();
+                        }
+                        (2, PbVal::Bytes(player_data)) => {
+                            item_xuid = parse_userinfo_xuid(&player_data);
+                        }
+                        _ => {}
                     }
                 }
+
+                if let Some(xuid) = item_xuid {
+                    xuid_to_slot.insert(xuid, slot);
+                }
+
+                let norm = normalize_name(&item_name);
+                if !norm.is_empty() {
+                    name_slot_raw.push((norm, slot));
+                }
+
                 slot += 1;
             }
-            break; // "userinfo" found and processed
+            break 'tables; // "userinfo" found and processed
         }
-        result
+
+        // Build name→slot map, excluding names that appear more than once.
+        // A wrong assignment (duplicate name) would be worse than no assignment.
+        let mut name_count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (name, _) in &name_slot_raw {
+            *name_count.entry(name.clone()).or_insert(0) += 1;
+        }
+
+        let mut name_to_slot: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut ambiguous: Vec<String> = Vec::new();
+        for (name, slot) in &name_slot_raw {
+            let count = *name_count.get(name.as_str()).unwrap_or(&0);
+            if count == 1 {
+                name_to_slot.insert(name.clone(), *slot);
+            } else if !ambiguous.contains(name) {
+                ambiguous.push(name.clone());
+            }
+        }
+        if !ambiguous.is_empty() {
+            eprintln!(
+                "[CS2DM] extract_userinfo_slots: {} ambiguous name(s) excluded from fallback: {:?}",
+                ambiguous.len(), ambiguous
+            );
+        }
+
+        UserInfoMaps { xuid_to_slot, name_to_slot }
     }
 
     /// Scan the demo stream for a CDemoStringTables packet (type 29) and return
-    /// the xuid → voice_slot mapping from the embedded "userinfo" string table.
+    /// both lookup maps from the embedded "userinfo" string table.
     ///
     /// CDemoStringTables always appears early in the demo (signon phase),
     /// so we stop after 1 000 packets to stay fast on large files.
-    fn find_voice_slots(data: &[u8]) -> std::collections::HashMap<String, u32> {
+    fn find_voice_slots(data: &[u8]) -> UserInfoMaps {
+        let empty = UserInfoMaps {
+            xuid_to_slot: std::collections::HashMap::new(),
+            name_to_slot: std::collections::HashMap::new(),
+        };
         let mut pos = 16usize; // skip 16-byte PBDEMS2 file header
         let mut scanned = 0u32;
         while pos < data.len() && scanned < 1_000 {
@@ -892,18 +960,18 @@ pub mod commands {
             pos += advance;
             scanned += 1;
             if msg_type == 29 {
-                let slots = extract_userinfo_slots(&body);
+                let maps = extract_userinfo_slots(&body);
                 eprintln!(
-                    "[CS2DM] find_voice_slots: CDemoStringTables after {} pkts → {} slots",
-                    scanned, slots.len()
+                    "[CS2DM] find_voice_slots: CDemoStringTables after {} pkts → {} xuid-slots, {} name-slots",
+                    scanned, maps.xuid_to_slot.len(), maps.name_to_slot.len()
                 );
-                if !slots.is_empty() {
-                    return slots;
+                if !maps.xuid_to_slot.is_empty() || !maps.name_to_slot.is_empty() {
+                    return maps;
                 }
             }
         }
         eprintln!("[CS2DM] find_voice_slots: no slots found after {} pkts", scanned);
-        std::collections::HashMap::new()
+        empty
     }
 
     /// Walk CDemoFileInfo → CGameInfo.csgo → CCSGameInfo → repeated player_info.
@@ -1019,19 +1087,55 @@ pub mod commands {
             return Ok(vec![]);
         }
 
-        // ── Step 2: get voice_mute slots from CDemoStringTables ────────────
+        // ── Step 2: voice slots from CDemoStringTables ────────────────────
+        //
+        // Merge priority:
+        //   A) xuid → slot   (exact SteamID64 match)
+        //   B) normalized name → slot  (fallback; skipped for ambiguous names)
+        //   C) entityId left undefined (no match found)
 
-        let voice_slots = find_voice_slots(&data);
-        eprintln!("[CS2DM] voice_slots map ({} entries): {:?}", voice_slots.len(), voice_slots);
+        let maps = find_voice_slots(&data);
+        eprintln!(
+            "[CS2DM] voice maps: {} xuid-slots, {} unique-name-slots",
+            maps.xuid_to_slot.len(), maps.name_to_slot.len()
+        );
+
+        let mut xuid_matches: u32 = 0;
+        let mut name_matches: u32 = 0;
+        let mut still_missing: u32 = 0;
 
         for player in &mut players {
-            if let Some(&slot) = voice_slots.get(&player.xuid) {
+            // A) xuid match
+            if let Some(&slot) = maps.xuid_to_slot.get(&player.xuid) {
                 player.entity_id = Some(slot);
+                xuid_matches += 1;
+                continue;
             }
+            // B) normalized name fallback (only when name is unique in the table)
+            let norm = normalize_name(&player.name);
+            if let Some(&slot) = maps.name_to_slot.get(&norm) {
+                player.entity_id = Some(slot);
+                name_matches += 1;
+                eprintln!(
+                    "[CS2DM] name-fallback: \"{}\" (norm: \"{}\") → slot {}",
+                    player.name, norm, slot
+                );
+                continue;
+            }
+            // C) no match
+            still_missing += 1;
+            eprintln!(
+                "[CS2DM] no match: xuid={} name=\"{}\" norm=\"{}\"",
+                player.xuid, player.name, norm
+            );
         }
 
         eprintln!(
-            "[CS2DM] parse_demo_players: returning {} players ({}  with entity_id)",
+            "[CS2DM] merge result: {} xuid-matches, {} name-fallbacks, {} still-missing",
+            xuid_matches, name_matches, still_missing
+        );
+        eprintln!(
+            "[CS2DM] parse_demo_players: returning {} players ({} with entity_id)",
             players.len(),
             players.iter().filter(|p| p.entity_id.is_some()).count()
         );
