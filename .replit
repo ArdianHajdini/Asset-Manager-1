@@ -31,4 +31,4 @@ channel = "stable-25_05"
 [userenv]
 
 [userenv.shared]
-VITE_FACEIT_CLIENT_ID = "435b87fc-9910-4d90-ac86-02ccd7c54664"
+VITE_FACEIT_CLIENT_ID = "ebb54805-05f0-4b8d-a1bd-467897094f70"
