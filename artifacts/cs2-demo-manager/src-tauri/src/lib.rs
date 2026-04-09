@@ -35,6 +35,11 @@ pub struct DemoPlayer {
     pub team_num: u32,
     #[serde(rename = "isHltv")]
     pub is_hltv: bool,
+    /// voice_mute slot index from the demo userinfo string table.
+    /// Present when the CDemoStringTables packet was successfully parsed.
+    /// Pass this value to CS2's `voice_mute <entityId>` console command.
+    #[serde(rename = "entityId", skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<u32>,
 }
 
 /// PBDEMS2 magic header bytes for CS2 demo files.
@@ -792,7 +797,113 @@ pub mod commands {
         if is_hltv || xuid < 76_561_197_960_265_728 || name.is_empty() {
             return None;
         }
-        Some(super::DemoPlayer { xuid: xuid.to_string(), name, team_num, is_hltv })
+        Some(super::DemoPlayer { xuid: xuid.to_string(), name, team_num, is_hltv, entity_id: None })
+    }
+
+    // ── Voice-slot parser (CDemoStringTables → userinfo) ──────────────────
+
+    /// Parse a CCSPlayerInfo entry from the `userinfo` string table data blob.
+    ///
+    /// CS2 public proto (CCSPlayerInfo):
+    ///   1: uint64  xuid        (Steam ID64)
+    ///   2: string  player_name
+    ///   7: bool    fakeplayer  (bot)
+    ///   8: bool    ishltv
+    ///
+    /// Returns the xuid as a string, or None for bots/HLTV/invalid entries.
+    fn parse_userinfo_xuid(data: &[u8]) -> Option<String> {
+        let mut xuid: u64 = 0;
+        let mut is_bot = false;
+        let mut is_hltv = false;
+        for (f, v) in pb_fields(data) {
+            match (f, v) {
+                (1, PbVal::Varint(v)) => xuid = v,
+                (7, PbVal::Varint(v)) => is_bot  = v != 0,
+                (8, PbVal::Varint(v)) => is_hltv = v != 0,
+                _ => {}
+            }
+        }
+        if is_bot || is_hltv || xuid < 76_561_197_960_265_728 {
+            return None;
+        }
+        Some(xuid.to_string())
+    }
+
+    /// Parse a CDemoStringTables proto body and return a xuid → voice_slot map.
+    ///
+    /// CDemoStringTables structure (field numbers):
+    ///   1: repeated table_t {
+    ///     1: string  table_name
+    ///     2: repeated items_t {
+    ///       1: string  str   (key / player name slot — may be empty)
+    ///       2: bytes   data  (CCSPlayerInfo proto)
+    ///     }
+    ///   }
+    ///
+    /// The position (0-based index) of each item within the "userinfo" table IS
+    /// the argument to pass to CS2's `voice_mute <slot>` command.
+    fn extract_userinfo_slots(body: &[u8]) -> std::collections::HashMap<String, u32> {
+        let mut result = std::collections::HashMap::new();
+
+        for (f1, v1) in pb_fields(body) {
+            if f1 != 1 { continue; }
+            let PbVal::Bytes(table_bytes) = v1 else { continue };
+            let table_fields = pb_fields(&table_bytes);
+
+            // Check table_name (field 1)
+            let is_userinfo = table_fields.iter().any(|(f, v)| {
+                *f == 1
+                    && matches!(v, PbVal::Bytes(b) if b.as_slice() == b"userinfo")
+            });
+            if !is_userinfo { continue; }
+
+            // Collect items (field 2) in order — their index is the voice slot
+            let mut slot: u32 = 0;
+            for (f2, v2) in table_fields {
+                if f2 != 2 { continue; }
+                let PbVal::Bytes(item_bytes) = v2 else { slot += 1; continue };
+
+                // items_t: field 2 = data (CCSPlayerInfo)
+                for (f3, v3) in pb_fields(&item_bytes) {
+                    if f3 != 2 { continue; }
+                    let PbVal::Bytes(player_data) = v3 else { continue };
+                    if let Some(xuid_str) = parse_userinfo_xuid(&player_data) {
+                        result.insert(xuid_str, slot);
+                    }
+                }
+                slot += 1;
+            }
+            break; // "userinfo" found and processed
+        }
+        result
+    }
+
+    /// Scan the demo stream for a CDemoStringTables packet (type 29) and return
+    /// the xuid → voice_slot mapping from the embedded "userinfo" string table.
+    ///
+    /// CDemoStringTables always appears early in the demo (signon phase),
+    /// so we stop after 1 000 packets to stay fast on large files.
+    fn find_voice_slots(data: &[u8]) -> std::collections::HashMap<String, u32> {
+        let mut pos = 16usize; // skip 16-byte PBDEMS2 file header
+        let mut scanned = 0u32;
+        while pos < data.len() && scanned < 1_000 {
+            let Some((cmd, body, advance)) = read_pbdems2_packet(&data[pos..]) else { break };
+            let msg_type = cmd & !super::DEM_IS_COMPRESSED_BIT;
+            pos += advance;
+            scanned += 1;
+            if msg_type == 29 {
+                let slots = extract_userinfo_slots(&body);
+                eprintln!(
+                    "[CS2DM] find_voice_slots: CDemoStringTables after {} pkts → {} slots",
+                    scanned, slots.len()
+                );
+                if !slots.is_empty() {
+                    return slots;
+                }
+            }
+        }
+        eprintln!("[CS2DM] find_voice_slots: no slots found after {} pkts", scanned);
+        std::collections::HashMap::new()
     }
 
     /// Walk CDemoFileInfo → CGameInfo.csgo → CCSGameInfo → repeated player_info.
@@ -845,9 +956,18 @@ pub mod commands {
 
     /// Parse player entries from a CS2 PBDEMS2 (.dem) file.
     ///
-    /// Returns each real player's Steam ID64, display name, and team number.
-    /// Strategy 1: seek to `fileinfo_offset` in the 16-byte header → CDemoFileInfo proto.
-    /// Strategy 2 (fallback): scan from the start for DEM_FileInfo (type 4) packets.
+    /// Returns each real player's Steam ID64, display name, team number,
+    /// and voice_mute slot (entityId).
+    ///
+    /// Step 1 — player names/teams (CDemoFileInfo):
+    ///   Strategy A: seek to `fileinfo_offset` in the 16-byte header.
+    ///   Strategy B (fallback): scan from the start for DEM_FileInfo (type 4) packets.
+    ///
+    /// Step 2 — voice slots (CDemoStringTables):
+    ///   Scan from the start for a CDemoStringTables (type 29) packet.
+    ///   The "userinfo" string table maps player xuid → voice_mute slot index.
+    ///   Slots are merged into the player list so the frontend can build
+    ///   `voice_mute <slot>` commands automatically.
     #[tauri::command]
     pub fn parse_demo_players(filepath: String) -> Result<Vec<super::DemoPlayer>, String> {
         let data = fs::read(&filepath)
@@ -860,38 +980,62 @@ pub mod commands {
             return Err("Kein gültiges CS2-Demo-Format (PBDEMS2 erwartet).".to_string());
         }
 
-        // Strategy 1: fileinfo_offset (bytes 8..12 of the header, little-endian i32)
+        // ── Step 1: get player names & teams from CDemoFileInfo ───────────
+
+        // Strategy A: fileinfo_offset (bytes 8..12, little-endian i32)
         let fi_offset = i32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
-        if fi_offset > 16 && fi_offset < data.len() {
+        let mut players = if fi_offset > 16 && fi_offset < data.len() {
             if let Some((_, body, _)) = read_pbdems2_packet(&data[fi_offset..]) {
-                let players = parse_file_info_proto(&body);
-                if !players.is_empty() {
-                    println!("[CS2DM] parse_demo_players: {} players via fileinfo_offset={}", players.len(), fi_offset);
-                    return Ok(players);
+                let ps = parse_file_info_proto(&body);
+                if !ps.is_empty() {
+                    eprintln!("[CS2DM] parse_demo_players: {} players via fileinfo_offset={}", ps.len(), fi_offset);
+                }
+                ps
+            } else { vec![] }
+        } else { vec![] };
+
+        // Strategy B (fallback): scan for DEM_FileInfo (type 4)
+        if players.is_empty() {
+            eprintln!("[CS2DM] parse_demo_players: fallback scan for DEM_FileInfo");
+            let mut pos = 16usize;
+            let mut scanned = 0u32;
+            while pos < data.len() && scanned < 2_000 {
+                let Some((cmd, body, advance)) = read_pbdems2_packet(&data[pos..]) else { break };
+                let msg_type = cmd & !super::DEM_IS_COMPRESSED_BIT;
+                pos += advance;
+                scanned += 1;
+                if msg_type == 4 {
+                    players = parse_file_info_proto(&body);
+                    if !players.is_empty() {
+                        eprintln!("[CS2DM] parse_demo_players: {} players via scan ({} pkts)", players.len(), scanned);
+                        break;
+                    }
                 }
             }
         }
 
-        // Strategy 2: scan for DEM_FileInfo (type 4)
-        println!("[CS2DM] parse_demo_players: fallback scan for DEM_FileInfo");
-        let mut pos = 16usize;
-        let mut scanned = 0u32;
-        while pos < data.len() && scanned < 2000 {
-            let Some((cmd, body, advance)) = read_pbdems2_packet(&data[pos..]) else { break };
-            let msg_type = cmd & !super::DEM_IS_COMPRESSED_BIT;
-            pos += advance;
-            scanned += 1;
-            if msg_type == 4 {
-                let players = parse_file_info_proto(&body);
-                if !players.is_empty() {
-                    println!("[CS2DM] parse_demo_players: {} players via scan after {} packets", players.len(), scanned);
-                    return Ok(players);
-                }
+        if players.is_empty() {
+            eprintln!("[CS2DM] parse_demo_players: no players found");
+            return Ok(vec![]);
+        }
+
+        // ── Step 2: get voice_mute slots from CDemoStringTables ────────────
+
+        let voice_slots = find_voice_slots(&data);
+        eprintln!("[CS2DM] voice_slots map ({} entries): {:?}", voice_slots.len(), voice_slots);
+
+        for player in &mut players {
+            if let Some(&slot) = voice_slots.get(&player.xuid) {
+                player.entity_id = Some(slot);
             }
         }
 
-        println!("[CS2DM] parse_demo_players: no players found");
-        Ok(vec![])
+        eprintln!(
+            "[CS2DM] parse_demo_players: returning {} players ({}  with entity_id)",
+            players.len(),
+            players.iter().filter(|p| p.entity_id.is_some()).count()
+        );
+        Ok(players)
     }
 
     /// Detect the Windows Downloads folder for the current user.
