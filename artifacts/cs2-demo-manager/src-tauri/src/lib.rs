@@ -891,6 +891,9 @@ pub mod commands {
     /// observer.  Returns `None` on any parse error or when no player entities
     /// were found, so the caller can fall back to the CDemoStringTables parser.
     fn find_voice_slots_via_source2(filepath: &str) -> Option<UserInfoMaps> {
+        // DemoRunner trait provides .run_to_end(); must be in scope to call it.
+        use source2_demo::DemoRunner;
+
         let file = match fs::File::open(filepath) {
             Ok(f) => f,
             Err(e) => {
