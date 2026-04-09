@@ -162,6 +162,13 @@ export interface TauriDemoPlayer {
   /** 2 = Terrorist, 3 = Counter-Terrorist, 0 = unassigned/spectator */
   teamNum: number;
   isHltv: boolean;
+  /**
+   * voice_mute slot index from the demo's userinfo string table.
+   * Present when the CDemoStringTables packet was successfully parsed.
+   * Pass this value directly to CS2's `voice_mute <entityId>` console command.
+   * Absent when the slot could not be determined (fall back to player-list display).
+   */
+  entityId?: number;
 }
 
 /**
