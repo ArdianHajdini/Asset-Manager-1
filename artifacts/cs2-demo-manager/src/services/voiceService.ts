@@ -162,9 +162,17 @@ export function hasEntityIds(players: TauriDemoPlayer[]): boolean {
  * Compute the tv_listen_voice_indices bitmask for the given players.
  * Bit N is set when the player at slot N should be heard.
  * Example: slots [2, 5, 7] → (1<<2)|(1<<5)|(1<<7) = 164
+ *
+ * JS bitwise operators are 32-bit, so slots > 30 would overflow.
+ * CS2 demos have at most 10 players per side (slots 0–9), so this
+ * guard is purely defensive.
  */
 export function buildVoiceIndexBitmask(players: TauriDemoPlayer[]): number {
-  return players.reduce((acc, p) => acc | (1 << (p.entityId as number)), 0);
+  return players.reduce((acc, p) => {
+    const slot = p.entityId as number;
+    if (slot > 30) return acc; // guard: skip implausibly large slot numbers
+    return acc | (1 << slot);
+  }, 0);
 }
 
 // ── Command builder ─────────────────────────────────────────────────────────
