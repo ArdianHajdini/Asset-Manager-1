@@ -1534,6 +1534,9 @@ pub mod commands {
         .inner_size(520.0, 720.0)
         .resizable(true)
         .center()
+        // Disguise WebView2 as a standard Chrome browser so FACEIT's login
+        // page doesn't detect an embedded webview and show a blank screen.
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         .on_navigation(move |url| {
             if !url.as_str().starts_with(REDIRECT_PREFIX) {
                 return true; // alle anderen Navigationen erlauben
