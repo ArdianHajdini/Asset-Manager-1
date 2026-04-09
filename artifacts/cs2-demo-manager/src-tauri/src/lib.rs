@@ -1515,27 +1515,28 @@ pub mod commands {
 
     #[tauri::command]
     pub fn open_oauth_webview(app: tauri::AppHandle, auth_url: String) -> Result<(), String> {
+        use std::path::PathBuf;
         use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
         const REDIRECT_PREFIX: &str = "https://127.0.0.1:14523/callback";
 
-        let parsed = auth_url
-            .parse::<tauri::Url>()
-            .map_err(|e| format!("[CS2DM] Ungültige Auth-URL: {}", e))?;
-
         let app_for_nav = app.clone();
 
-        WebviewWindowBuilder::new(
+        // Start the window on our own bundled loading page (oauth.html).
+        // Using WebviewUrl::External directly with on_navigation causes a blank
+        // white window in some Tauri v2 / WebView2 configurations. Starting on a
+        // local Tauri page first and then navigating via eval() avoids this.
+        let window = WebviewWindowBuilder::new(
             &app,
             "faceit-oauth",
-            WebviewUrl::External(parsed),
+            WebviewUrl::App(PathBuf::from("oauth.html")),
         )
         .title("FACEIT Anmelden — CS2 Demo Manager")
         .inner_size(520.0, 720.0)
         .resizable(true)
         .center()
-        // Disguise WebView2 as a standard Chrome browser so FACEIT's login
-        // page doesn't detect an embedded webview and show a blank screen.
+        // Spoof Chrome user-agent so FACEIT's login page does not detect
+        // WebView2 and refuse to render (anti-embedding security measure).
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         .on_navigation(move |url| {
             if !url.as_str().starts_with(REDIRECT_PREFIX) {
@@ -1568,7 +1569,6 @@ pub mod commands {
 
             let _ = app_for_nav.emit("faceit-oauth-callback", payload);
 
-            // Fenster schließen — Manager-Trait gibt get_webview_window()
             if let Some(win) = app_for_nav.get_webview_window("faceit-oauth") {
                 let _ = win.close();
             }
@@ -1577,6 +1577,17 @@ pub mod commands {
         })
         .build()
         .map_err(|e| format!("[CS2DM] OAuth-Fenster konnte nicht geöffnet werden: {}", e))?;
+
+        // Give WebView2 a moment to finish initialising the local page, then
+        // navigate to FACEIT's auth URL via JavaScript. on_navigation (registered
+        // on the builder above) remains active for all subsequent navigations.
+        let win_for_eval = window.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            // Rust Debug-format gives a properly quoted + escaped JS string literal.
+            let js = format!("window.location.replace({:?});", auth_url);
+            let _ = win_for_eval.eval(&js);
+        });
 
         Ok(())
     }
