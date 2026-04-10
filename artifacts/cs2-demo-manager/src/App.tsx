@@ -8,7 +8,11 @@ import { HomePage } from "./pages/HomePage";
 import { LibraryPage } from "./pages/LibraryPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { LicensePage } from "./pages/LicensePage";
-import { getLicenseStatus } from "./services/licenseService";
+import {
+  getLicenseStatus,
+  validateLicenseOnline,
+  clearStoredLicense,
+} from "./services/licenseService";
 import "./i18n/index";
 
 const queryClient = new QueryClient();
@@ -45,8 +49,36 @@ function App() {
   const [licensed, setLicensed] = useState<boolean | null>(null);
 
   useEffect(() => {
-    const status = getLicenseStatus();
-    setLicensed(status === "active" || status === "offline_grace");
+    async function checkLicense() {
+      const status = getLicenseStatus();
+
+      if (status === "unlicensed") {
+        setLicensed(false);
+        return;
+      }
+
+      if (status === "offline_expired") {
+        clearStoredLicense();
+        setLicensed(false);
+        return;
+      }
+
+      // Key exists and within grace period — validate online
+      const onlineResult = await validateLicenseOnline();
+
+      if (onlineResult === "valid") {
+        setLicensed(true);
+      } else if (onlineResult === "invalid") {
+        // Server confirmed key is invalid — clear it
+        clearStoredLicense();
+        setLicensed(false);
+      } else {
+        // "offline" — network unreachable, allow grace period
+        setLicensed(true);
+      }
+    }
+
+    checkLicense();
   }, []);
 
   if (licensed === null) {
@@ -60,10 +92,7 @@ function App() {
   if (!licensed) {
     return (
       <LicensePage
-        onActivated={() => {
-          const status = getLicenseStatus();
-          setLicensed(status === "active" || status === "offline_grace");
-        }}
+        onActivated={() => setLicensed(true)}
       />
     );
   }

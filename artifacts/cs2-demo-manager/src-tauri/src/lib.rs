@@ -32,6 +32,12 @@ pub struct LicenseVerifyResult {
     pub error: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LicenseValidateResult {
+    pub valid: bool,
+    pub offline: bool,
+}
+
 /// A player entry extracted from a CS2 demo file.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DemoPlayer {
@@ -1542,7 +1548,26 @@ pub mod commands {
     }
 
     #[tauri::command]
-    pub async fn verify_license(license_key: String) -> super::LicenseVerifyResult {
+    pub async fn verify_license(license_key: String, provider: String) -> super::LicenseVerifyResult {
+        if provider == "lemonsqueezy" {
+            let (ok, iid, err) = ls_activate_req(&license_key).await;
+            return super::LicenseVerifyResult {
+                success: ok,
+                provider: if ok { "lemonsqueezy".to_string() } else { String::new() },
+                instance_id: iid,
+                error: err,
+            };
+        }
+        if provider == "gumroad" {
+            let (ok, err) = gr_verify_req(&license_key, true).await;
+            return super::LicenseVerifyResult {
+                success: ok,
+                provider: if ok { "gumroad".to_string() } else { String::new() },
+                instance_id: String::new(),
+                error: err,
+            };
+        }
+        // Try both in parallel (legacy / fallback)
         let (ls, gr) = tokio::join!(
             ls_activate_req(&license_key),
             gr_verify_req(&license_key, true),
@@ -1582,10 +1607,27 @@ pub mod commands {
         license_key: String,
         instance_id: String,
         provider: String,
-    ) -> bool {
+    ) -> super::LicenseValidateResult {
         if provider == "gumroad" {
-            let (ok, _) = gr_verify_req(&license_key, false).await;
-            return ok;
+            let client = reqwest::Client::new();
+            let params = vec![("product_id", GR_PRODUCT_ID), ("license_key", license_key.as_str())];
+            return match client
+                .post(GR_VERIFY_URL)
+                .header("Accept", "application/json")
+                .form(&params)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let json: serde_json::Value =
+                        resp.json().await.unwrap_or(serde_json::Value::Null);
+                    super::LicenseValidateResult {
+                        valid: json["success"].as_bool().unwrap_or(false),
+                        offline: false,
+                    }
+                }
+                Err(_) => super::LicenseValidateResult { valid: false, offline: true },
+            };
         }
         let client = reqwest::Client::new();
         match client
@@ -1601,9 +1643,12 @@ pub mod commands {
             Ok(resp) => {
                 let json: serde_json::Value =
                     resp.json().await.unwrap_or(serde_json::Value::Null);
-                json["valid"].as_bool().unwrap_or(false)
+                super::LicenseValidateResult {
+                    valid: json["valid"].as_bool().unwrap_or(false),
+                    offline: false,
+                }
             }
-            Err(_) => false,
+            Err(_) => super::LicenseValidateResult { valid: false, offline: true },
         }
     }
 

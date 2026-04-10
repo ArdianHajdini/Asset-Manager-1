@@ -194,22 +194,28 @@ export interface TauriLicenseVerifyResult {
   error: string;
 }
 
-/** Verify a license key against LemonSqueezy + Gumroad via Rust (no CORS). */
-export async function tauriVerifyLicense(
-  licenseKey: string
-): Promise<TauriLicenseVerifyResult> {
-  const invoke = await getInvoke();
-  return invoke<TauriLicenseVerifyResult>("verify_license", { licenseKey });
+export interface TauriLicenseValidateResult {
+  valid: boolean;
+  offline: boolean;
 }
 
-/** Validate an already-activated license key via the correct provider. */
+/** Verify a license key via Rust reqwest (no CORS). provider: "lemonsqueezy" | "gumroad" */
+export async function tauriVerifyLicense(
+  licenseKey: string,
+  provider: string
+): Promise<TauriLicenseVerifyResult> {
+  const invoke = await getInvoke();
+  return invoke<TauriLicenseVerifyResult>("verify_license", { licenseKey, provider });
+}
+
+/** Validate an already-activated license. Returns {valid, offline} to distinguish network errors. */
 export async function tauriValidateLicense(
   licenseKey: string,
   instanceId: string,
   provider: string
-): Promise<boolean> {
+): Promise<TauriLicenseValidateResult> {
   const invoke = await getInvoke();
-  return invoke<boolean>("validate_license_stored", { licenseKey, instanceId, provider });
+  return invoke<TauriLicenseValidateResult>("validate_license_stored", { licenseKey, instanceId, provider });
 }
 
 /** Deactivate a LemonSqueezy license instance (Gumroad: no-op, cleared locally). */
