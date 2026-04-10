@@ -194,26 +194,30 @@ export async function deactivateLicense(): Promise<DeactivateResult> {
   const stored = load();
   if (!stored) return { success: true };
 
-  if (stored.provider === "gumroad") {
-    clear();
+  // Always clear locally first — the user must always be able to deactivate
+  clear();
+
+  // Gumroad has no server-side deactivation API — done
+  if (!stored.provider || stored.provider === "gumroad") {
     return { success: true };
   }
 
-  try {
-    if (isTauri()) {
-      const ok = await tauriDeactivateLicense(stored.key, stored.instanceId);
-      if (ok) { clear(); return { success: true }; }
-      return { success: false, error: "deactivate_failed" };
+  // LemonSqueezy: notify server best-effort (don't block on failure)
+  if (stored.instanceId) {
+    try {
+      if (isTauri()) {
+        await tauriDeactivateLicense(stored.key, stored.instanceId);
+      } else {
+        await fetch(`${LS_API}/deactivate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+          body: new URLSearchParams({ license_key: stored.key, instance_id: stored.instanceId }).toString(),
+        });
+      }
+    } catch {
+      // Server notification failed — key is already cleared locally, that's fine
     }
-    const res = await fetch(`${LS_API}/deactivate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-      body: new URLSearchParams({ license_key: stored.key, instance_id: stored.instanceId }).toString(),
-    });
-    const data = await res.json();
-    if (data.deactivated) { clear(); return { success: true }; }
-    return { success: false, error: data.error };
-  } catch {
-    return { success: false, error: "network" };
   }
+
+  return { success: true };
 }
