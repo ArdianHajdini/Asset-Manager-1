@@ -1,3 +1,10 @@
+import {
+  isTauri,
+  tauriVerifyLicense,
+  tauriValidateLicense,
+  tauriDeactivateLicense,
+} from "./tauriBridge";
+
 const LS_KEY = "fedcs2_license";
 const GRACE_DAYS = 7;
 
@@ -55,9 +62,11 @@ export interface ActivateResult {
   error?: "invalid" | "network" | string;
 }
 
-async function tryLemonSqueezy(
+// ── Browser fallback: direct fetch (dev/preview only) ────────────────────────
+
+async function browserTryLemonSqueezy(
   licenseKey: string
-): Promise<ActivateResult & { instanceId?: string }> {
+): Promise<{ success: boolean; instanceId: string; error: string }> {
   const instanceName = `FEDCS2-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
   try {
     const res = await fetch(`${LS_API}/activate`, {
@@ -67,64 +76,68 @@ async function tryLemonSqueezy(
     });
     const data = await res.json();
     if (data.activated && data.instance?.id) {
-      return { success: true, instanceId: data.instance.id };
+      return { success: true, instanceId: String(data.instance.id), error: "" };
     }
-    const msg: string = (data.error ?? "").toLowerCase();
-    if (msg.includes("invalid") || msg.includes("expired") || msg.includes("disabled")) {
-      return { success: false, error: "invalid" };
-    }
-    return { success: false, error: data.error ?? "invalid" };
+    return { success: false, instanceId: "", error: "invalid" };
   } catch {
-    return { success: false, error: "network" };
+    return { success: false, instanceId: "", error: "network" };
   }
 }
 
-async function tryGumroad(licenseKey: string, incrementUses = true): Promise<ActivateResult> {
+async function browserTryGumroad(
+  licenseKey: string,
+  increment = true
+): Promise<{ success: boolean; error: string }> {
   try {
-    const params: Record<string, string> = {
-      product_id: GR_PRODUCT_ID,
-      license_key: licenseKey,
-    };
-    if (incrementUses) params.increment_uses_count = "true";
+    const params: Record<string, string> = { product_id: GR_PRODUCT_ID, license_key: licenseKey };
+    if (increment) params.increment_uses_count = "true";
     const res = await fetch(GR_API, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
       body: new URLSearchParams(params).toString(),
     });
     const data = await res.json();
-    if (data.success) return { success: true };
-    return { success: false, error: "invalid" };
+    return data.success ? { success: true, error: "" } : { success: false, error: "invalid" };
   } catch {
     return { success: false, error: "network" };
   }
 }
 
+// ── Public API ─────────────────────────────────────────────────────────────
+
 export async function activateLicense(licenseKey: string): Promise<ActivateResult> {
+  // In Tauri desktop: use Rust (reqwest — no CORS restrictions)
+  if (isTauri()) {
+    try {
+      const result = await tauriVerifyLicense(licenseKey);
+      if (result.success) {
+        save({
+          key: licenseKey,
+          instanceId: result.instanceId ?? "",
+          validatedAt: new Date().toISOString(),
+          provider: result.provider === "gumroad" ? "gumroad" : "lemonsqueezy",
+        });
+        return { success: true };
+      }
+      return { success: false, error: result.error || "invalid" };
+    } catch {
+      return { success: false, error: "network" };
+    }
+  }
+
+  // Browser fallback (dev preview — CORS may block Gumroad)
   const [lsResult, grResult] = await Promise.all([
-    tryLemonSqueezy(licenseKey),
-    tryGumroad(licenseKey, true),
+    browserTryLemonSqueezy(licenseKey),
+    browserTryGumroad(licenseKey, true),
   ]);
-
-  if (lsResult.success && lsResult.instanceId) {
-    save({
-      key: licenseKey,
-      instanceId: lsResult.instanceId,
-      validatedAt: new Date().toISOString(),
-      provider: "lemonsqueezy",
-    });
+  if (lsResult.success) {
+    save({ key: licenseKey, instanceId: lsResult.instanceId, validatedAt: new Date().toISOString(), provider: "lemonsqueezy" });
     return { success: true };
   }
-
   if (grResult.success) {
-    save({
-      key: licenseKey,
-      instanceId: "",
-      validatedAt: new Date().toISOString(),
-      provider: "gumroad",
-    });
+    save({ key: licenseKey, instanceId: "", validatedAt: new Date().toISOString(), provider: "gumroad" });
     return { success: true };
   }
-
   if (lsResult.error === "network" && grResult.error === "network") {
     return { success: false, error: "network" };
   }
@@ -134,10 +147,21 @@ export async function activateLicense(licenseKey: string): Promise<ActivateResul
 export async function validateLicense(): Promise<boolean> {
   const stored = load();
   if (!stored) return false;
+
   try {
+    if (isTauri()) {
+      const ok = await tauriValidateLicense(stored.key, stored.instanceId, stored.provider);
+      if (ok) {
+        save({ ...stored, validatedAt: new Date().toISOString() });
+        return true;
+      }
+      return false;
+    }
+
+    // Browser fallback
     if (stored.provider === "gumroad") {
-      const grResult = await tryGumroad(stored.key, false);
-      if (grResult.success) {
+      const gr = await browserTryGumroad(stored.key, false);
+      if (gr.success) {
         save({ ...stored, validatedAt: new Date().toISOString() });
         return true;
       }
@@ -175,6 +199,16 @@ export async function deactivateLicense(): Promise<DeactivateResult> {
   }
 
   try {
+    if (isTauri()) {
+      const ok = await tauriDeactivateLicense(stored.key, stored.instanceId);
+      if (ok) {
+        clear();
+        return { success: true };
+      }
+      return { success: false, error: "deactivate_failed" };
+    }
+
+    // Browser fallback
     const res = await fetch(`${LS_API}/deactivate`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },

@@ -24,6 +24,14 @@ pub struct LaunchResult {
     pub note: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct LicenseVerifyResult {
+    pub success: bool,
+    pub provider: String,
+    pub instance_id: String,
+    pub error: String,
+}
+
 /// A player entry extracted from a CS2 demo file.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DemoPlayer {
@@ -1467,6 +1475,163 @@ pub mod commands {
         }
     }
 
+    // ── License verification (reqwest — bypasses WebView CORS) ──────────────
+
+    const LS_API_BASE: &str = "https://api.lemonsqueezy.com/v1/licenses";
+    const GR_VERIFY_URL: &str = "https://api.gumroad.com/v2/licenses/verify";
+    const GR_PRODUCT_ID: &str = "easyDemo";
+
+    async fn ls_activate_req(key: &str) -> (bool, String, String) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(42);
+        let instance_name = format!("FEDCS2-{:08X}", ts);
+        let client = reqwest::Client::new();
+        match client
+            .post(format!("{}/activate", LS_API_BASE))
+            .header("Accept", "application/json")
+            .form(&[("license_key", key), ("instance_name", instance_name.as_str())])
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let json: serde_json::Value =
+                    resp.json().await.unwrap_or(serde_json::Value::Null);
+                let activated = json["activated"].as_bool().unwrap_or(false);
+                let iid = json["instance"]["id"]
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| json["instance"]["id"].as_u64().map(|n| n.to_string()))
+                    .unwrap_or_default();
+                if activated && !iid.is_empty() {
+                    (true, iid, String::new())
+                } else {
+                    (false, String::new(), "invalid".to_string())
+                }
+            }
+            Err(_) => (false, String::new(), "network".to_string()),
+        }
+    }
+
+    async fn gr_verify_req(key: &str, increment: bool) -> (bool, String) {
+        let client = reqwest::Client::new();
+        let mut params: Vec<(&str, &str)> =
+            vec![("product_id", GR_PRODUCT_ID), ("license_key", key)];
+        if increment {
+            params.push(("increment_uses_count", "true"));
+        }
+        match client
+            .post(GR_VERIFY_URL)
+            .header("Accept", "application/json")
+            .form(&params)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let json: serde_json::Value =
+                    resp.json().await.unwrap_or(serde_json::Value::Null);
+                if json["success"].as_bool().unwrap_or(false) {
+                    (true, String::new())
+                } else {
+                    (false, "invalid".to_string())
+                }
+            }
+            Err(_) => (false, "network".to_string()),
+        }
+    }
+
+    #[tauri::command]
+    pub async fn verify_license(license_key: String) -> super::LicenseVerifyResult {
+        let (ls, gr) = tokio::join!(
+            ls_activate_req(&license_key),
+            gr_verify_req(&license_key, true),
+        );
+        let (ls_ok, ls_iid, ls_err) = ls;
+        let (gr_ok, gr_err) = gr;
+        if ls_ok {
+            return super::LicenseVerifyResult {
+                success: true,
+                provider: "lemonsqueezy".to_string(),
+                instance_id: ls_iid,
+                error: String::new(),
+            };
+        }
+        if gr_ok {
+            return super::LicenseVerifyResult {
+                success: true,
+                provider: "gumroad".to_string(),
+                instance_id: String::new(),
+                error: String::new(),
+            };
+        }
+        super::LicenseVerifyResult {
+            success: false,
+            provider: String::new(),
+            instance_id: String::new(),
+            error: if ls_err == "network" && gr_err == "network" {
+                "network".to_string()
+            } else {
+                "invalid".to_string()
+            },
+        }
+    }
+
+    #[tauri::command]
+    pub async fn validate_license_stored(
+        license_key: String,
+        instance_id: String,
+        provider: String,
+    ) -> bool {
+        if provider == "gumroad" {
+            let (ok, _) = gr_verify_req(&license_key, false).await;
+            return ok;
+        }
+        let client = reqwest::Client::new();
+        match client
+            .post(format!("{}/validate", LS_API_BASE))
+            .header("Accept", "application/json")
+            .form(&[
+                ("license_key", license_key.as_str()),
+                ("instance_id", instance_id.as_str()),
+            ])
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let json: serde_json::Value =
+                    resp.json().await.unwrap_or(serde_json::Value::Null);
+                json["valid"].as_bool().unwrap_or(false)
+            }
+            Err(_) => false,
+        }
+    }
+
+    #[tauri::command]
+    pub async fn deactivate_license_stored(
+        license_key: String,
+        instance_id: String,
+    ) -> bool {
+        let client = reqwest::Client::new();
+        match client
+            .post(format!("{}/deactivate", LS_API_BASE))
+            .header("Accept", "application/json")
+            .form(&[
+                ("license_key", license_key.as_str()),
+                ("instance_id", instance_id.as_str()),
+            ])
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let json: serde_json::Value =
+                    resp.json().await.unwrap_or(serde_json::Value::Null);
+                json["deactivated"].as_bool().unwrap_or(false)
+            }
+            Err(_) => false,
+        }
+    }
+
 }
 
 // ─────────────────────────────────────────
@@ -1493,6 +1658,9 @@ pub fn run() {
             commands::scan_downloads,
             commands::detect_downloads_folder,
             commands::parse_demo_players,
+            commands::verify_license,
+            commands::validate_license_stored,
+            commands::deactivate_license_stored,
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten der Anwendung");

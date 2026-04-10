@@ -183,6 +183,44 @@ export async function tauriParseDemoPlayers(filepath: string): Promise<TauriDemo
   return invoke<TauriDemoPlayer[]>("parse_demo_players", { filepath });
 }
 
+// ─────────────────────────────────────────
+//  License verification (Rust reqwest — no CORS)
+// ─────────────────────────────────────────
+
+export interface TauriLicenseVerifyResult {
+  success: boolean;
+  provider: string;
+  instanceId: string;
+  error: string;
+}
+
+/** Verify a license key against LemonSqueezy + Gumroad via Rust (no CORS). */
+export async function tauriVerifyLicense(
+  licenseKey: string
+): Promise<TauriLicenseVerifyResult> {
+  const invoke = await getInvoke();
+  return invoke<TauriLicenseVerifyResult>("verify_license", { licenseKey });
+}
+
+/** Validate an already-activated license key via the correct provider. */
+export async function tauriValidateLicense(
+  licenseKey: string,
+  instanceId: string,
+  provider: string
+): Promise<boolean> {
+  const invoke = await getInvoke();
+  return invoke<boolean>("validate_license_stored", { licenseKey, instanceId, provider });
+}
+
+/** Deactivate a LemonSqueezy license instance (Gumroad: no-op, cleared locally). */
+export async function tauriDeactivateLicense(
+  licenseKey: string,
+  instanceId: string
+): Promise<boolean> {
+  const invoke = await getInvoke();
+  return invoke<boolean>("deactivate_license_stored", { licenseKey, instanceId });
+}
+
 /**
  * Convert a TauriDemoEntry to the app's Demo type (adds a placeholder id).
  * The actual id is assigned by the frontend storage layer.
