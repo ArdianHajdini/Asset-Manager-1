@@ -114,8 +114,8 @@ export function LicensePage({ onActivated }: LicensePageProps) {
           </button>
         </div>
 
-        {/* Buy link */}
-        <div className="mt-6 text-center">
+        {/* Buy links */}
+        <div className="mt-6 flex flex-col items-center gap-2">
           <a
             href="https://ardian.lemonsqueezy.com"
             target="_blank"
@@ -124,6 +124,15 @@ export function LicensePage({ onActivated }: LicensePageProps) {
           >
             <ExternalLink className="w-3.5 h-3.5" />
             {t("license.buy")}
+          </a>
+          <a
+            href="https://ardihajdi.gumroad.com/l/easyDemo"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-orange-400 hover:text-orange-300 text-sm transition-colors"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            {t("license.buyGumroad")}
           </a>
         </div>
       </div>
