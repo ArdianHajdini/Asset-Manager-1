@@ -1485,7 +1485,7 @@ pub mod commands {
 
     const LS_API_BASE: &str = "https://api.lemonsqueezy.com/v1/licenses";
     const GR_VERIFY_URL: &str = "https://api.gumroad.com/v2/licenses/verify";
-    const GR_PRODUCT_ID: &str = "lzzaga";
+    const GR_PRODUCT_ID: &str = "2yW8xYHXZ3Zp4EswsRVqqA==";
 
     async fn ls_activate_req(key: &str) -> (bool, String, String) {
         let ts = std::time::SystemTime::now()
