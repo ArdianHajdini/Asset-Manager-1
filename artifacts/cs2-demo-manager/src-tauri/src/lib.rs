@@ -1485,7 +1485,7 @@ pub mod commands {
 
     const LS_API_BASE: &str = "https://api.lemonsqueezy.com/v1/licenses";
     const GR_VERIFY_URL: &str = "https://api.gumroad.com/v2/licenses/verify";
-    const GR_PRODUCT_ID: &str = "easyDemo";
+    const GR_PRODUCT_ID: &str = "lzzaga";
 
     async fn ls_activate_req(key: &str) -> (bool, String, String) {
         let ts = std::time::SystemTime::now()
@@ -1522,11 +1522,12 @@ pub mod commands {
 
     async fn gr_verify_req(key: &str, increment: bool) -> (bool, String) {
         let client = reqwest::Client::new();
-        let mut params: Vec<(&str, &str)> =
-            vec![("product_id", GR_PRODUCT_ID), ("license_key", key)];
-        if increment {
-            params.push(("increment_uses_count", "true"));
-        }
+        let increment_val = if increment { "true" } else { "false" };
+        let params = vec![
+            ("product_id", GR_PRODUCT_ID),
+            ("license_key", key),
+            ("increment_uses_count", increment_val),
+        ];
         match client
             .post(GR_VERIFY_URL)
             .header("Accept", "application/json")
@@ -1537,11 +1538,20 @@ pub mod commands {
             Ok(resp) => {
                 let json: serde_json::Value =
                     resp.json().await.unwrap_or(serde_json::Value::Null);
-                if json["success"].as_bool().unwrap_or(false) {
-                    (true, String::new())
-                } else {
-                    (false, "invalid".to_string())
+                if !json["success"].as_bool().unwrap_or(false) {
+                    let msg = json["message"]
+                        .as_str()
+                        .unwrap_or("invalid")
+                        .to_string();
+                    return (false, msg);
                 }
+                // Reject refunded or chargebacked purchases
+                let refunded = json["purchase"]["refunded"].as_bool().unwrap_or(false);
+                let chargebacked = json["purchase"]["chargebacked"].as_bool().unwrap_or(false);
+                if refunded || chargebacked {
+                    return (false, "refunded".to_string());
+                }
+                (true, String::new())
             }
             Err(_) => (false, "network".to_string()),
         }
