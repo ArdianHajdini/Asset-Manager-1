@@ -100,7 +100,11 @@ async function tryGumroad(licenseKey: string, incrementUses = true): Promise<Act
 }
 
 export async function activateLicense(licenseKey: string): Promise<ActivateResult> {
-  const lsResult = await tryLemonSqueezy(licenseKey);
+  const [lsResult, grResult] = await Promise.all([
+    tryLemonSqueezy(licenseKey),
+    tryGumroad(licenseKey, true),
+  ]);
+
   if (lsResult.success && lsResult.instanceId) {
     save({
       key: licenseKey,
@@ -110,11 +114,7 @@ export async function activateLicense(licenseKey: string): Promise<ActivateResul
     });
     return { success: true };
   }
-  if (lsResult.error === "network") {
-    return { success: false, error: "network" };
-  }
 
-  const grResult = await tryGumroad(licenseKey, true);
   if (grResult.success) {
     save({
       key: licenseKey,
@@ -124,10 +124,10 @@ export async function activateLicense(licenseKey: string): Promise<ActivateResul
     });
     return { success: true };
   }
-  if (grResult.error === "network") {
+
+  if (lsResult.error === "network" && grResult.error === "network") {
     return { success: false, error: "network" };
   }
-
   return { success: false, error: "invalid" };
 }
 

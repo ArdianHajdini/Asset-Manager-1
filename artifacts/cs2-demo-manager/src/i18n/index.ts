@@ -46,6 +46,7 @@ i18n
       pl: { translation: pl },
     },
     fallbackLng: "en",
+    load: "languageOnly",
     detection: {
       order: ["localStorage", "navigator"],
       lookupLocalStorage: "i18nextLng",

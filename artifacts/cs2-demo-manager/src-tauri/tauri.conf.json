@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' tauri: asset: https://api.lemonsqueezy.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: tauri: asset:; connect-src 'self' https://api.lemonsqueezy.com https: ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self' tauri: asset: https://api.lemonsqueezy.com https://api.gumroad.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: tauri: asset:; connect-src 'self' https://api.lemonsqueezy.com https://api.gumroad.com https: ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {
