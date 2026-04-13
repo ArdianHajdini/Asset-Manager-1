@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { X, Skull, Crosshair, Eye, Gauge, Footprints, Users, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TauriDeathEvent, TauriDemoPlayer } from "../services/tauriBridge";
@@ -153,6 +153,16 @@ export function StatisticsModal({ demoName, filepath, players, preselectedSteamI
   const activePlayers = players.filter(p => p.teamNum === 2 || p.teamNum === 3);
   const tPlayers = activePlayers.filter(p => p.teamNum === 2);
   const ctPlayers = activePlayers.filter(p => p.teamNum === 3);
+
+  const autoTriggered = useRef(false);
+  useEffect(() => {
+    if (autoTriggered.current || !preselectedSteamId) return;
+    const match = activePlayers.find(p => p.xuid === preselectedSteamId);
+    if (match) {
+      autoTriggered.current = true;
+      handleSelectPlayer(match.xuid, match.name);
+    }
+  }, []);
 
   async function handleSelectPlayer(steamId: string, name: string) {
     setSelectedPlayer(name);

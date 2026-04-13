@@ -1804,7 +1804,9 @@ pub mod commands {
                             .get(&killer_ctrl)
                             .cloned()
                             .unwrap_or_else(|| {
-                                eprintln!("[DeathObserver] WARN: unresolved killer controller handle {}", killer_ctrl);
+                                if killer_ctrl > 0 {
+                                    eprintln!("[DeathObserver] WARN: unresolved killer controller handle {}", killer_ctrl);
+                                }
                                 "Unknown".to_string()
                             });
                         let victim_steamid = self
