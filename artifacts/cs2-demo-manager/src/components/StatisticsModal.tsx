@@ -18,21 +18,6 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-// CS2 map metadata: world-to-radar pixel transform.
-// Formula: radarX = (worldX - posX) / scale,  radarY = (posY - worldY) / scale
-const MAP_META: Record<string, { posX: number; posY: number; scale: number }> = {
-  de_dust2:    { posX: -2476, posY: 3239, scale: 4.4 },
-  de_mirage:   { posX: -3230, posY: 1713, scale: 5.0 },
-  de_inferno:  { posX: -2087, posY: 3870, scale: 4.9 },
-  de_nuke:     { posX: -3453, posY: 2887, scale: 7.0 },
-  de_overpass: { posX: -4831, posY: 1781, scale: 5.2 },
-  de_ancient:  { posX: -2953, posY: 2164, scale: 5.0 },
-  de_anubis:   { posX: -2796, posY: 3328, scale: 5.22 },
-  de_vertigo:  { posX: -3168, posY: 1762, scale: 4.0 },
-  de_cache:    { posX: -2000, posY: 3250, scale: 5.5 },
-  de_train:    { posX: -2450, posY: 2923, scale: 4.9 },
-};
-
 function getVerdict(d: TauriDeathEvent, t: (key: string) => string): { text: string; color: string } {
   if (!d.hasPosData) return { text: t("stats.verdictNone"), color: "text-white/40" };
 
@@ -62,23 +47,20 @@ function getVerdict(d: TauriDeathEvent, t: (key: string) => string): { text: str
  *        svgAngle = -yaw_deg  (for SVG-angle functions where 0=right, 90=down)
  */
 function MapDiagram({ death }: { death: TauriDeathEvent }) {
-  const [imgLoaded, setImgLoaded] = useState(true);
-
   if (!death.hasPosData) return null;
 
   const isKill = death.playerIsKiller;
 
-  // "player" = the tracked player. "enemy" = the opponent.
   const playerPos = isKill ? death.killerPos : death.victimPos;
   const enemyPos  = isKill ? death.victimPos : death.killerPos;
   const playerYaw = isKill ? death.killerEyeYaw : death.victimEyeYaw;
   const playerColor = isKill ? "#22c55e" : "#3b82f6";
-  const playerColorFov = isKill ? "rgba(34,197,94,0.18)" : "rgba(59,130,246,0.18)";
-  const playerColorFovStroke = isKill ? "rgba(34,197,94,0.45)" : "rgba(59,130,246,0.45)";
+  const fovFill = isKill ? "rgba(34,197,94,0.12)" : "rgba(59,130,246,0.12)";
+  const fovStroke = isKill ? "rgba(34,197,94,0.35)" : "rgba(59,130,246,0.35)";
 
   const SIZE = 260;
+  const HALF = SIZE / 2;
 
-  // World space midpoint between the two positions
   const wcx = (playerPos[0] + enemyPos[0]) / 2;
   const wcy = (playerPos[1] + enemyPos[1]) / 2;
 
@@ -86,54 +68,57 @@ function MapDiagram({ death }: { death: TauriDeathEvent }) {
     (playerPos[0] - enemyPos[0]) ** 2 + (playerPos[1] - enemyPos[1]) ** 2
   );
 
-  // Show a region ≥ 300 and ≤ 3000 world units across, with 25% padding around the fight
   const halfExtentWorld = Math.max(200, Math.min(1800, dist * 0.75));
   const svgPerWorld = SIZE / (2 * halfExtentWorld);
 
-  function worldToSVG(wx: number, wy: number): [number, number] {
+  function w2s(wx: number, wy: number): [number, number] {
     return [
-      (wx - wcx) * svgPerWorld + SIZE / 2,
-      -(wy - wcy) * svgPerWorld + SIZE / 2,
+      (wx - wcx) * svgPerWorld + HALF,
+      -(wy - wcy) * svgPerWorld + HALF,
     ];
   }
 
-  const [px, py] = worldToSVG(playerPos[0], playerPos[1]);
-  const [ex, ey] = worldToSVG(enemyPos[0], enemyPos[1]);
+  const [px, py] = w2s(playerPos[0], playerPos[1]);
+  const [ex, ey] = w2s(enemyPos[0], enemyPos[1]);
 
-  // FOV cone: 90° total (45° half-angle)
-  const coneLen = Math.min(80, dist * svgPerWorld * 0.7);
-  const fovHalf = 45 * (Math.PI / 180);
+  // FOV cone: 90° total
+  const coneLen = Math.min(75, dist * svgPerWorld * 0.65);
   const yawRad = playerYaw * (Math.PI / 180);
-  // SVG angle = -yaw  (Y-axis inverted)
-  const svgBaseAngle = -yawRad;
-  const la = svgBaseAngle - fovHalf;
-  const ra = svgBaseAngle + fovHalf;
+  const fovHalf = 45 * (Math.PI / 180);
+  const svgAngle = -yawRad;
+  const la = svgAngle - fovHalf;
+  const ra = svgAngle + fovHalf;
   const lx = px + Math.cos(la) * coneLen;
   const ly = py + Math.sin(la) * coneLen;
   const rx = px + Math.cos(ra) * coneLen;
   const ry = py + Math.sin(ra) * coneLen;
 
-  // Map radar image (1024×1024 covering the whole map)
-  const mapMeta = death.mapName ? MAP_META[death.mapName] : undefined;
-  let imageX = 0, imageY = 0, imageSize = 0;
-  let hasMapImage = false;
-  if (mapMeta && imgLoaded && death.mapName) {
-    // Radar-pixel coordinates of world midpoint
-    const mrx = (wcx - mapMeta.posX) / mapMeta.scale;
-    const mry = (mapMeta.posY - wcy) / mapMeta.scale;
-    // SVG pixels per radar pixel
-    const svgPerRadar = svgPerWorld * mapMeta.scale;
-    imageSize = 1024 * svgPerRadar;
-    imageX = SIZE / 2 - mrx * svgPerRadar;
-    imageY = SIZE / 2 - mry * svgPerRadar;
-    hasMapImage = true;
-  }
+  // Look-direction line (extends further than the cone)
+  const lookLen = coneLen * 1.3;
+  const lookX = px + Math.cos(svgAngle) * lookLen;
+  const lookY = py + Math.sin(svgAngle) * lookLen;
 
-  const radarUrl = death.mapName
-    ? `https://unpkg.com/csgo-overviews/maps/${death.mapName}_radar.png`
-    : null;
+  // World-coordinate grid: snap to nearest "round" step
+  const worldExtent = halfExtentWorld * 2;
+  const gridStep = worldExtent < 500 ? 100
+    : worldExtent < 1500 ? 250
+    : worldExtent < 3000 ? 500
+    : 1000;
 
-  // Truncate enemy name for label
+  // Generate vertical grid lines (world X values)
+  const worldLeft = wcx - halfExtentWorld;
+  const worldRight = wcx + halfExtentWorld;
+  const worldBottom = wcy - halfExtentWorld;
+  const worldTop = wcy + halfExtentWorld;
+
+  const gridLinesV: number[] = [];
+  const startX = Math.ceil(worldLeft / gridStep) * gridStep;
+  for (let x = startX; x <= worldRight; x += gridStep) gridLinesV.push(x);
+
+  const gridLinesH: number[] = [];
+  const startY = Math.ceil(worldBottom / gridStep) * gridStep;
+  for (let y = startY; y <= worldTop; y += gridStep) gridLinesH.push(y);
+
   const enemyLabel = isKill
     ? (death.victimName || "enemy").slice(0, 12)
     : (death.killerName || "enemy").slice(0, 12);
@@ -141,91 +126,103 @@ function MapDiagram({ death }: { death: TauriDeathEvent }) {
   return (
     <div className="flex flex-col items-center gap-1.5">
       {death.mapName && (
-        <p className="text-[9px] uppercase tracking-widest text-white/25 font-mono">
+        <p className="text-[9px] uppercase tracking-widest text-white/30 font-mono">
           {death.mapName}
         </p>
       )}
       <svg
         width={SIZE} height={SIZE}
-        className="rounded-xl border border-white/8 overflow-hidden"
-        style={{ background: "#060b10" }}
+        className="rounded-xl border border-white/10 overflow-hidden"
+        style={{ background: "#0a1214" }}
       >
-        <defs>
-          <pattern id="mapgrid" width="26" height="26" patternUnits="userSpaceOnUse">
-            <path d="M 26 0 L 0 0 0 26" fill="none" stroke="rgba(255,255,255,0.025)" strokeWidth="1" />
-          </pattern>
-          <clipPath id="svgClip">
-            <rect width={SIZE} height={SIZE} />
-          </clipPath>
-        </defs>
+        {/* Grid lines with coordinate labels */}
+        {gridLinesV.map((wx) => {
+          const [sx] = w2s(wx, 0);
+          return (
+            <g key={`gv-${wx}`}>
+              <line x1={sx} y1={0} x2={sx} y2={SIZE}
+                stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+              <text x={sx} y={SIZE - 4} textAnchor="middle"
+                fill="rgba(255,255,255,0.15)" fontSize={7}
+                style={{ fontFamily: "monospace" }}>
+                {wx}
+              </text>
+            </g>
+          );
+        })}
+        {gridLinesH.map((wy) => {
+          const [, sy] = w2s(0, wy);
+          return (
+            <g key={`gh-${wy}`}>
+              <line x1={0} y1={sy} x2={SIZE} y2={sy}
+                stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
+              <text x={4} y={sy - 3}
+                fill="rgba(255,255,255,0.15)" fontSize={7}
+                style={{ fontFamily: "monospace" }}>
+                {wy}
+              </text>
+            </g>
+          );
+        })}
 
-        {/* Grid fallback background */}
-        <rect width={SIZE} height={SIZE} fill="url(#mapgrid)" />
+        {/* Compass markers */}
+        <text x={HALF} y={10} textAnchor="middle"
+          fill="rgba(255,255,255,0.2)" fontSize={9} fontWeight="bold"
+          style={{ fontFamily: "monospace" }}>N</text>
+        <text x={HALF} y={SIZE - 3} textAnchor="middle"
+          fill="rgba(255,255,255,0.12)" fontSize={8}
+          style={{ fontFamily: "monospace" }}>S</text>
+        <text x={SIZE - 5} y={HALF + 3} textAnchor="end"
+          fill="rgba(255,255,255,0.12)" fontSize={8}
+          style={{ fontFamily: "monospace" }}>E</text>
+        <text x={5} y={HALF + 3} textAnchor="start"
+          fill="rgba(255,255,255,0.12)" fontSize={8}
+          style={{ fontFamily: "monospace" }}>W</text>
 
-        {/* Map radar image */}
-        {radarUrl && hasMapImage && (
-          <image
-            href={radarUrl}
-            x={imageX} y={imageY}
-            width={imageSize} height={imageSize}
-            preserveAspectRatio="none"
-            opacity={0.5}
-            clipPath="url(#svgClip)"
-            onError={() => setImgLoaded(false)}
-          />
-        )}
-
-        {/* FOV cone from player position */}
+        {/* FOV cone */}
         <polygon
           points={`${px},${py} ${lx},${ly} ${rx},${ry}`}
-          fill={playerColorFov}
-          stroke={playerColorFovStroke}
+          fill={fovFill}
+          stroke={fovStroke}
           strokeWidth="1"
           strokeLinejoin="round"
         />
 
-        {/* Dashed line between the two positions */}
-        <line
-          x1={px} y1={py} x2={ex} y2={ey}
-          stroke="rgba(255,255,255,0.10)"
-          strokeWidth="1"
-          strokeDasharray="5 4"
-        />
+        {/* Look direction line */}
+        <line x1={px} y1={py} x2={lookX} y2={lookY}
+          stroke={fovStroke} strokeWidth="1.5" />
 
-        {/* Enemy dot */}
-        <circle cx={ex} cy={ey} r={5.5} fill="#ef4444" />
-        <text
-          x={ex} y={ey - 10}
-          textAnchor="middle"
-          fill="rgba(255,100,100,0.85)"
-          fontSize={9}
-          fontWeight="bold"
-          style={{ fontFamily: "monospace" }}
-        >
+        {/* Dashed line between positions */}
+        <line x1={px} y1={py} x2={ex} y2={ey}
+          stroke="rgba(255,255,255,0.12)" strokeWidth="1"
+          strokeDasharray="5 4" />
+
+        {/* Enemy dot + ring + label */}
+        <circle cx={ex} cy={ey} r={7} fill="none"
+          stroke="rgba(239,68,68,0.3)" strokeWidth="1.5" />
+        <circle cx={ex} cy={ey} r={4} fill="#ef4444" />
+        <text x={ex} y={ey - 10} textAnchor="middle"
+          fill="rgba(255,100,100,0.9)" fontSize={9} fontWeight="bold"
+          style={{ fontFamily: "monospace" }}>
           {enemyLabel}
         </text>
 
-        {/* Player dot */}
-        <circle cx={px} cy={py} r={6.5} fill={playerColor} />
-        <text
-          x={px} y={py + 17}
-          textAnchor="middle"
-          fill={isKill ? "rgba(34,197,94,0.85)" : "rgba(80,140,255,0.85)"}
-          fontSize={9}
-          fontWeight="bold"
-          style={{ fontFamily: "monospace" }}
-        >
+        {/* Player dot + ring + label */}
+        <circle cx={px} cy={py} r={8} fill="none"
+          stroke={isKill ? "rgba(34,197,94,0.3)" : "rgba(59,130,246,0.3)"}
+          strokeWidth="1.5" />
+        <circle cx={px} cy={py} r={4.5} fill={playerColor} />
+        <text x={px} y={py + 17} textAnchor="middle"
+          fill={isKill ? "rgba(34,197,94,0.9)" : "rgba(80,140,255,0.9)"}
+          fontSize={9} fontWeight="bold"
+          style={{ fontFamily: "monospace" }}>
           YOU
         </text>
 
-        {/* Distance label bottom-right */}
-        <text
-          x={SIZE - 6} y={SIZE - 6}
-          textAnchor="end"
-          fill="rgba(255,255,255,0.20)"
-          fontSize={8.5}
-          style={{ fontFamily: "monospace" }}
-        >
+        {/* Distance bottom-right */}
+        <text x={SIZE - 6} y={14} textAnchor="end"
+          fill="rgba(255,255,255,0.2)" fontSize={8.5}
+          style={{ fontFamily: "monospace" }}>
           {Math.round(dist)} u
         </text>
       </svg>
