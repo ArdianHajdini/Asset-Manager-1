@@ -236,11 +236,15 @@ export interface TauriDeathEvent {
   killerPos: [number, number, number];
   victimEyeYaw: number;
   victimEyePitch: number;
+  killerEyeYaw: number;
+  killerEyePitch: number;
   victimSpeed: number;
   crosshairErrorDeg: number;
   wasEnemyInFov: boolean;
   shotBeforeStop: boolean;
   hasPosData: boolean;
+  playerIsKiller: boolean;
+  mapName: string;
   debugInfo: string;
 }
 

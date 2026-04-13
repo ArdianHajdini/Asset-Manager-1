@@ -63,13 +63,18 @@ pub struct DemoDeathEvent {
     pub victim_eye_yaw: f32,
     #[serde(rename = "victimEyePitch")]
     pub victim_eye_pitch: f32,
+    #[serde(rename = "killerEyeYaw")]
+    pub killer_eye_yaw: f32,
+    #[serde(rename = "killerEyePitch")]
+    pub killer_eye_pitch: f32,
     /// Horizontal speed of victim at death (units/s)
     #[serde(rename = "victimSpeed")]
     pub victim_speed: f32,
-    /// Angle in degrees between victim's view direction and killer's position
+    /// Angle in degrees between the PLAYER's view direction and the enemy's position.
+    /// For deaths: from victim toward killer. For kills: from killer toward victim.
     #[serde(rename = "crosshairErrorDeg")]
     pub crosshair_error_deg: f32,
-    /// True if crosshairErrorDeg < 45
+    /// True if crosshairErrorDeg < 45 (enemy was in player's view cone)
     #[serde(rename = "wasEnemyInFov")]
     pub was_enemy_in_fov: bool,
     /// True if victim was moving (speed > 10) at death
@@ -78,6 +83,12 @@ pub struct DemoDeathEvent {
     /// True if position data was successfully extracted from entities
     #[serde(rename = "hasPosData")]
     pub has_pos_data: bool,
+    /// True if the tracked player is the killer (not the victim) in this event
+    #[serde(rename = "playerIsKiller")]
+    pub player_is_killer: bool,
+    /// CS2 map name (e.g. "de_dust2"), empty if unavailable
+    #[serde(rename = "mapName")]
+    pub map_name: String,
     /// One-line diagnostic string for in-app debugging (always populated)
     #[serde(rename = "debugInfo")]
     pub debug_info: String,
@@ -1638,8 +1649,10 @@ pub mod commands {
             /// controller entity_index → steamid string
             pub ctrl_steamid: HashMap<u32, String>,
             pub current_round: u32,
-            /// Filter: only keep deaths where victim_name == this string.
-            /// Empty string = keep all deaths.
+            /// CS2 map name read from the demo file header (e.g. "de_dust2").
+            pub map_name: String,
+            /// Filter: only keep events where victim_name OR killer_name == this string.
+            /// Empty string = keep all events.
             pub target_player_name: String,
             /// how many controllers we have logged via eprintln (capped at 3)
             pub dbg_ctrl_seen: u32,
@@ -1656,6 +1669,7 @@ pub mod commands {
                     ctrl_name: HashMap::new(),
                     ctrl_steamid: HashMap::new(),
                     current_round: 0,
+                    map_name: String::new(),
                     target_player_name: String::new(),
                     dbg_ctrl_seen: 0,
                     dbg_pawn_seen: 0,
@@ -1841,7 +1855,6 @@ pub mod commands {
                             .and_then(|v| TryInto::<bool>::try_into(v).ok())
                             .unwrap_or(false);
 
-                        // Read raw event values for debug logging
                         let raw_userid: i32 = event
                             .get_value("userid")
                             .ok()
@@ -1861,36 +1874,33 @@ pub mod commands {
                             .get(&victim_ctrl)
                             .cloned()
                             .unwrap_or_else(|| {
-                                eprintln!("[DeathObserver] WARN: unresolved victim ctrl={} raw={}", victim_ctrl, raw_userid);
+                                eprintln!("[DeathObserver] WARN: unresolved victim ctrl={}", victim_ctrl);
                                 String::new()
                             });
                         let killer_name = self
                             .ctrl_name
                             .get(&killer_ctrl)
                             .cloned()
-                            .unwrap_or_else(|| {
-                                if killer_ctrl > 0 {
-                                    eprintln!("[DeathObserver] WARN: unresolved killer ctrl={} raw={}", killer_ctrl, raw_attacker);
-                                }
-                                "SourceTV".to_string()
-                            });
+                            .unwrap_or_else(|| "SourceTV".to_string());
                         let victim_steamid = self
                             .ctrl_steamid
                             .get(&victim_ctrl)
                             .cloned()
                             .unwrap_or_default();
 
-                        // Filter by player name — more reliable than steam ID for FACEIT/proxy demos.
-                        // Both the player list and death events read from m_iszPlayerName, so they
-                        // always match, regardless of account type.
+                        // Include events where the tracked player is the victim OR the killer.
                         if !self.target_player_name.is_empty()
                             && victim_name != self.target_player_name
+                            && killer_name != self.target_player_name
                         {
                             return Ok(());
                         }
 
+                        // true when the tracked player pulled the trigger
+                        let player_is_killer = !self.target_player_name.is_empty()
+                            && killer_name == self.target_player_name;
+
                         // Build a snapshot for a given controller.
-                        // All position + angles + velocity come from the CCSPlayerPawn snapshot.
                         let get_snap = |ctrl: u32| -> Option<PawnSnapshot> {
                             let pawn_idx = self.ctrl_to_pawn.get(&ctrl).copied()?;
                             Some(self.pawn_snapshots
@@ -1902,27 +1912,28 @@ pub mod commands {
                         let victim_snap = get_snap(victim_ctrl).unwrap_or_default();
                         let killer_snap = get_snap(killer_ctrl).unwrap_or_default();
 
-                        // has_pos_data is true as long as the victim has a valid position.
-                        // Killer position may be absent for SourceTV kills, fall damage, etc.
                         let has_pos_data = victim_snap.x != 0.0 || victim_snap.y != 0.0;
-
-                        // Crosshair error only makes sense when BOTH positions are known.
                         let both_positions = has_pos_data
                             && (killer_snap.x != 0.0 || killer_snap.y != 0.0);
 
+                        // Crosshair error is always from the PLAYER's perspective:
+                        //   death event → how accurately the victim was watching the killer
+                        //   kill event  → how accurately the killer (player) aimed at the victim
                         let (crosshair_error_deg, was_enemy_in_fov) =
                             if both_positions {
-                                crosshair_error(&victim_snap, &killer_snap)
+                                if player_is_killer {
+                                    crosshair_error(&killer_snap, &victim_snap)
+                                } else {
+                                    crosshair_error(&victim_snap, &killer_snap)
+                                }
                             } else {
                                 (0.0, false)
                             };
 
                         let speed = (victim_snap.vel_x.powi(2) + victim_snap.vel_y.powi(2)).sqrt();
                         let tick = ctx.tick() as u32;
-                        // CS2 demos run at 64 ticks per second
                         let time_seconds = tick as f32 / 64.0;
 
-                        // Build a diagnostic string that is always returned to the frontend
                         let victim_pawn_str = self.ctrl_to_pawn
                             .get(&victim_ctrl)
                             .map(|p| p.to_string())
@@ -1932,13 +1943,13 @@ pub mod commands {
                             .map(|p| p.to_string())
                             .unwrap_or_else(|| "NONE".to_string());
                         let debug_info = format!(
-                            "uid_raw={} att_raw={} | vc={} vp={} kc={} kp={} | vpos=[{:.0},{:.0},{:.0}] kpos=[{:.0},{:.0},{:.0}] | posData={} | victim={:?} killer={:?} sid={:?}",
+                            "uid_raw={} att_raw={} | vc={} vp={} kc={} kp={} | vpos=[{:.0},{:.0},{:.0}] kpos=[{:.0},{:.0},{:.0}] | posData={} | kill={} | victim={:?} killer={:?} sid={:?}",
                             raw_userid, raw_attacker,
                             victim_ctrl, victim_pawn_str,
                             killer_ctrl, killer_pawn_str,
                             victim_snap.x, victim_snap.y, victim_snap.z,
                             killer_snap.x, killer_snap.y, killer_snap.z,
-                            has_pos_data,
+                            has_pos_data, player_is_killer,
                             victim_name, killer_name, victim_steamid,
                         );
 
@@ -1955,11 +1966,15 @@ pub mod commands {
                             killer_pos: [killer_snap.x, killer_snap.y, killer_snap.z],
                             victim_eye_yaw: victim_snap.eye_yaw,
                             victim_eye_pitch: victim_snap.eye_pitch,
+                            killer_eye_yaw: killer_snap.eye_yaw,
+                            killer_eye_pitch: killer_snap.eye_pitch,
                             victim_speed: speed,
                             crosshair_error_deg,
                             was_enemy_in_fov,
                             shot_before_stop: speed > 10.0,
                             has_pos_data,
+                            player_is_killer,
+                            map_name: self.map_name.clone(),
                             debug_info,
                         });
                     }
