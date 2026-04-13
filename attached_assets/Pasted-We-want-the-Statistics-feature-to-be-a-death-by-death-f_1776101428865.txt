@@ -1,0 +1,79 @@
+We want the Statistics feature to be a death-by-death fight analysis tool, not a general stats page.
+
+The goal is:
+For each death, the user should quickly understand what likely went wrong in that situation.
+
+We only want these statistics per death:
+
+1. Basic death info
+- round number
+- time in round
+- killer name
+- weapon
+- optional: headshot yes/no
+
+Purpose:
+This gives context for the fight.
+
+2. Crosshair error
+- show how far the player’s crosshair was from the enemy
+- use degrees if possible
+- this is the main aim / crosshair placement metric
+
+Purpose:
+Show whether the player was already aimed close to the enemy or far away.
+
+3. Enemy in FOV
+- show whether the enemy was inside the player’s field of view
+- simple yes / no is enough
+
+Purpose:
+Show whether the player could realistically see the enemy or was surprised from outside view.
+
+4. Speed
+- show the player’s movement speed at the relevant moment
+- this should help indicate whether the player was stable or still moving
+
+Purpose:
+Show movement stability.
+
+5. Shot before stop
+- show whether the player shot before being properly stopped
+- yes / no
+
+Purpose:
+This is the counter-strafing metric.
+It should help identify if the player fired while still moving.
+
+6. Positions (relative fight view)
+- show a simple 2D fight diagram
+- player position
+- enemy position
+- line between them
+
+Important:
+This is not a full real map.
+It should be presented as a relative fight-position view.
+
+Most important requirement:
+For each death, add a short explanation of what likely went wrong.
+
+Examples:
+- Enemy was outside your FOV
+- You were still moving when shooting
+- Crosshair was far from enemy
+- Good crosshair placement, but you still lost the duel
+- No obvious issue detected
+
+We do NOT want:
+- general match stats
+- ADR
+- K/D
+- heatmaps
+- large charts
+- screenshots
+- video clips
+- complicated visualizations
+- Leetify-style overload
+
+This feature must stay focused, simple, and useful.
