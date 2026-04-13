@@ -1795,17 +1795,26 @@ pub mod commands {
                             .ctrl_name
                             .get(&victim_ctrl)
                             .cloned()
-                            .unwrap_or_default();
+                            .unwrap_or_else(|| {
+                                eprintln!("[DeathObserver] WARN: unresolved victim controller handle {}", victim_ctrl);
+                                String::new()
+                            });
                         let killer_name = self
                             .ctrl_name
                             .get(&killer_ctrl)
                             .cloned()
-                            .unwrap_or_else(|| "Unknown".to_string());
+                            .unwrap_or_else(|| {
+                                eprintln!("[DeathObserver] WARN: unresolved killer controller handle {}", killer_ctrl);
+                                "Unknown".to_string()
+                            });
                         let victim_steamid = self
                             .ctrl_steamid
                             .get(&victim_ctrl)
                             .cloned()
-                            .unwrap_or_default();
+                            .unwrap_or_else(|| {
+                                eprintln!("[DeathObserver] WARN: no steamid for victim controller {}", victim_ctrl);
+                                String::new()
+                            });
 
                         if !self.target_steamid.is_empty()
                             && victim_steamid != self.target_steamid

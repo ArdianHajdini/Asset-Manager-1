@@ -45,6 +45,8 @@ const es = {
     yourAccount: "Tú",
     noSteamId: "Sin Steam ID",
     noPlayers: "No se encontraron jugadores en esta demo",
+    teamT: "Terroristas",
+    teamCT: "Antiterroristas",
     noDeaths: "No se encontraron muertes",
     noDeathsHint: "Este jugador no tuvo muertes en la demo.",
     crosshairError: "Mira",

@@ -45,6 +45,8 @@ const zh = {
     yourAccount: "你",
     noSteamId: "无 Steam ID",
     noPlayers: "此 Demo 中未找到玩家",
+    teamT: "恐怖分子",
+    teamCT: "反恐精英",
     noDeaths: "未找到死亡记录",
     noDeathsHint: "该玩家在此 Demo 中没有死亡。",
     crosshairError: "准星",

@@ -45,6 +45,8 @@ const ar = {
     yourAccount: "أنت",
     noSteamId: "لا يوجد Steam ID",
     noPlayers: "لم يتم العثور على لاعبين في هذا العرض",
+    teamT: "إرهابيون",
+    teamCT: "مكافحة الإرهاب",
     noDeaths: "لم يتم العثور على وفيات",
     noDeathsHint: "لم يكن لهذا اللاعب وفيات في العرض.",
     crosshairError: "التصويب",

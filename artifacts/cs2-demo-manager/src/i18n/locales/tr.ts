@@ -45,6 +45,8 @@ const tr = {
     yourAccount: "Sen",
     noSteamId: "Steam ID yok",
     noPlayers: "Bu demoda oyuncu bulunamadı",
+    teamT: "Teröristler",
+    teamCT: "Anti-Teröristler",
     noDeaths: "Ölüm bulunamadı",
     noDeathsHint: "Bu oyuncunun demoda ölümü olmadı.",
     crosshairError: "Nişangah",

@@ -232,7 +232,7 @@ export function StatisticsModal({ demoName, filepath, players, preselectedSteamI
               <div>
                 <p className="text-yellow-400/60 text-[10px] uppercase tracking-wider mb-2 flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-yellow-500/40 inline-block" />
-                  Terrorists
+                  {t("stats.teamT")}
                 </p>
                 <div className="space-y-1">
                   {tPlayers.map((p, i) => (
@@ -266,7 +266,7 @@ export function StatisticsModal({ demoName, filepath, players, preselectedSteamI
               <div>
                 <p className="text-blue-400/60 text-[10px] uppercase tracking-wider mb-2 flex items-center gap-1.5">
                   <span className="w-2 h-2 rounded-full bg-blue-500/40 inline-block" />
-                  Counter-Terrorists
+                  {t("stats.teamCT")}
                 </p>
                 <div className="space-y-1">
                   {ctPlayers.map((p, i) => (

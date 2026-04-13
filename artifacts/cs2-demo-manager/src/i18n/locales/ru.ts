@@ -45,6 +45,8 @@ const ru = {
     yourAccount: "Вы",
     noSteamId: "Нет Steam ID",
     noPlayers: "В этой демо игроки не найдены",
+    teamT: "Террористы",
+    teamCT: "Контр-террористы",
     noDeaths: "Смерти не найдены",
     noDeathsHint: "У этого игрока не было смертей в демо.",
     crosshairError: "Прицел",

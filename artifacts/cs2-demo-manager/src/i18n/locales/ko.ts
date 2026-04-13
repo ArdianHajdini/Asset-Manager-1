@@ -45,6 +45,8 @@ const ko = {
     yourAccount: "본인",
     noSteamId: "Steam ID 없음",
     noPlayers: "이 데모에서 플레이어를 찾을 수 없습니다",
+    teamT: "테러리스트",
+    teamCT: "대테러부대",
     noDeaths: "사망 기록 없음",
     noDeathsHint: "이 플레이어는 데모에서 사망이 없었습니다.",
     crosshairError: "조준점",
