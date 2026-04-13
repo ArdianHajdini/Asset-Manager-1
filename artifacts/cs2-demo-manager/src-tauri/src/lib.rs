@@ -1197,6 +1197,36 @@ pub mod commands {
         empty
     }
 
+    fn extract_map_name(data: &[u8]) -> String {
+        if data.len() < 16 || &data[..8] != super::PBDEMS2_MAGIC {
+            return String::new();
+        }
+        let mut pos = 16usize;
+        let mut scanned = 0u32;
+        while pos < data.len() && scanned < 50 {
+            let Some((cmd, body, advance)) = read_pbdems2_packet(&data[pos..]) else { break };
+            let msg_type = cmd & !super::DEM_IS_COMPRESSED_BIT;
+            pos += advance;
+            scanned += 1;
+            if msg_type == 1 {
+                for (field_num, val) in pb_fields(&body) {
+                    if field_num == 5 {
+                        if let PbVal::Bytes(b) = val {
+                            let s = String::from_utf8_lossy(&b)
+                                .trim_end_matches('\0')
+                                .to_string();
+                            if !s.is_empty() {
+                                eprintln!("[CS2DM] extract_map_name: {}", s);
+                                return s;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        String::new()
+    }
+
     /// Walk CDemoFileInfo → CGameInfo.csgo → CCSGameInfo → repeated player_info.
     fn parse_file_info_proto(data: &[u8]) -> Vec<super::DemoPlayer> {
         for (f1, v1) in pb_fields(data) {
@@ -2134,14 +2164,21 @@ pub mod commands {
     ) -> Result<Vec<super::DemoDeathEvent>, String> {
         use source2_demo::DemoRunner;
 
-        let file = std::fs::File::open(&filepath)
-            .map_err(|e| format!("Cannot open demo file: {e}"))?;
+        let file_data = std::fs::read(&filepath)
+            .map_err(|e| format!("Cannot read demo file: {e}"))?;
 
-        let mut parser = source2_demo::Parser::from_reader(file)
+        let map_name = extract_map_name(&file_data);
+
+        let cursor = std::io::Cursor::new(file_data);
+        let mut parser = source2_demo::Parser::from_reader(cursor)
             .map_err(|e| format!("Parser init error: {e}"))?;
 
         let collector = parser.register_observer::<s2_deaths::DeathObserver>();
-        collector.borrow_mut().target_player_name = player_name;
+        {
+            let mut obs = collector.borrow_mut();
+            obs.target_player_name = player_name;
+            obs.map_name = map_name;
+        }
 
         parser
             .run_to_end()
@@ -2149,8 +2186,9 @@ pub mod commands {
 
         let obs = collector.borrow();
         eprintln!(
-            "[CS2DM] parse_demo_deaths: {} deaths found in {}",
+            "[CS2DM] parse_demo_deaths: {} events (map={}) found in {}",
             obs.deaths.len(),
+            obs.map_name,
             filepath
         );
 
