@@ -1,11 +1,15 @@
-import { X, Skull, Crosshair, Eye, Gauge, Footprints } from "lucide-react";
+import { useState } from "react";
+import { X, Skull, Crosshair, Eye, Gauge, Footprints, Users, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { TauriDeathEvent } from "../services/tauriBridge";
+import type { TauriDeathEvent, TauriDemoPlayer } from "../services/tauriBridge";
+import { tauriParseDemoDeaths } from "../services/tauriBridge";
 import { cn } from "@/lib/utils";
 
 interface StatisticsModalProps {
   demoName: string;
-  deaths: TauriDeathEvent[];
+  filepath: string;
+  players: TauriDemoPlayer[];
+  preselectedSteamId?: string;
   onClose: () => void;
 }
 
@@ -27,9 +31,8 @@ function getVerdict(d: TauriDeathEvent, t: (key: string) => string): { text: str
 function FightDiagram({ death, t }: { death: TauriDeathEvent; t: (key: string) => string }) {
   if (!death.hasPosData) return null;
   const W = 160, H = 120;
-  const vx = death.victimPos[0], vy = death.victimPos[1];
-  const kx = death.killerPos[0], ky = death.killerPos[1];
-  const dx = kx - vx, dy = ky - vy;
+  const dx = death.killerPos[0] - death.victimPos[0];
+  const dy = death.killerPos[1] - death.victimPos[1];
   const dist = Math.sqrt(dx * dx + dy * dy) || 1;
   const pad = 30;
   const cx = W / 2, cy = H / 2;
@@ -64,14 +67,12 @@ function MetricBadge({ label, value, color, icon }: { label: string; value: stri
   );
 }
 
-function DeathCard({ death, index, t }: { death: TauriDeathEvent; index: number; t: (key: string) => string }) {
+function DeathCard({ death, t }: { death: TauriDeathEvent; t: (key: string) => string }) {
   const verdict = getVerdict(death, t);
-
   const crosshairColor = !death.hasPosData ? "text-white/20"
     : death.crosshairErrorDeg < 15 ? "text-green-400"
     : death.crosshairErrorDeg < 45 ? "text-yellow-400"
     : "text-red-400";
-
   const speedColor = death.victimSpeed < 10 ? "text-green-400"
     : death.victimSpeed < 60 ? "text-yellow-400"
     : "text-red-400";
@@ -136,8 +137,45 @@ function DeathCard({ death, index, t }: { death: TauriDeathEvent; index: number;
   );
 }
 
-export function StatisticsModal({ demoName, deaths, onClose }: StatisticsModalProps) {
+function teamBadge(teamNum: number) {
+  if (teamNum === 2) return <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-yellow-500/20 text-yellow-400">T</span>;
+  if (teamNum === 3) return <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-500/20 text-blue-400">CT</span>;
+  return null;
+}
+
+export function StatisticsModal({ demoName, filepath, players, preselectedSteamId, onClose }: StatisticsModalProps) {
   const { t } = useTranslation();
+  const [deaths, setDeaths] = useState<TauriDeathEvent[] | null>(null);
+  const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const activePlayers = players.filter(p => p.teamNum === 2 || p.teamNum === 3);
+  const tPlayers = activePlayers.filter(p => p.teamNum === 2);
+  const ctPlayers = activePlayers.filter(p => p.teamNum === 3);
+
+  async function handleSelectPlayer(steamId: string, name: string) {
+    setSelectedPlayer(name);
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await tauriParseDemoDeaths(filepath, steamId);
+      setDeaths(result);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleBack() {
+    setDeaths(null);
+    setSelectedPlayer(null);
+    setError(null);
+  }
+
+  const showPlayerPicker = deaths === null && !loading;
+  const showDeaths = deaths !== null && !loading;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
@@ -145,10 +183,20 @@ export function StatisticsModal({ demoName, deaths, onClose }: StatisticsModalPr
 
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/8 shrink-0">
           <div className="flex items-center gap-2.5">
-            <Skull className="w-4 h-4 text-orange-400" />
+            {showDeaths ? (
+              <button onClick={handleBack} className="p-1 rounded-lg text-white/40 hover:text-white/70 hover:bg-white/8 transition-all mr-1">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+              </button>
+            ) : (
+              <Skull className="w-4 h-4 text-orange-400" />
+            )}
             <div>
-              <p className="text-white font-semibold text-sm">{t("stats.title")}</p>
-              <p className="text-white/35 text-xs font-mono truncate max-w-[260px]">{demoName}</p>
+              <p className="text-white font-semibold text-sm">
+                {showPlayerPicker ? t("stats.selectPlayer") : t("stats.title")}
+              </p>
+              <p className="text-white/35 text-xs font-mono truncate max-w-[260px]">
+                {selectedPlayer ?? demoName}
+              </p>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-white/30 hover:text-white/70 hover:bg-white/8 transition-all">
@@ -156,7 +204,101 @@ export function StatisticsModal({ demoName, deaths, onClose }: StatisticsModalPr
           </button>
         </div>
 
-        {deaths.length === 0 && (
+        {loading && (
+          <div className="flex-1 flex flex-col items-center justify-center py-16 text-white/40">
+            <Loader2 className="w-8 h-8 animate-spin mb-3" />
+            <p className="text-sm">{t("demo.statsLoading")}</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="flex-1 flex flex-col items-center justify-center py-16 text-red-400/70">
+            <Skull className="w-8 h-8 mb-3 opacity-50" />
+            <p className="text-sm">{t("demo.statsError")}</p>
+            <p className="text-xs mt-1 text-white/20 max-w-xs text-center break-all">{error}</p>
+          </div>
+        )}
+
+        {showPlayerPicker && (
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {activePlayers.length === 0 && (
+              <div className="flex flex-col items-center justify-center py-12 text-white/30">
+                <Users className="w-8 h-8 mb-3 opacity-30" />
+                <p className="text-sm">{t("stats.noPlayers")}</p>
+              </div>
+            )}
+
+            {tPlayers.length > 0 && (
+              <div>
+                <p className="text-yellow-400/60 text-[10px] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-yellow-500/40 inline-block" />
+                  Terrorists
+                </p>
+                <div className="space-y-1">
+                  {tPlayers.map((p, i) => (
+                    <button
+                      key={`t-${i}`}
+                      onClick={() => handleSelectPlayer(p.xuid, p.name)}
+                      disabled={!p.xuid}
+                      className={cn(
+                        "w-full text-left rounded-xl border px-4 py-3 transition-all flex items-center gap-3",
+                        p.xuid === preselectedSteamId
+                          ? "border-orange-500/30 bg-orange-500/8 hover:bg-orange-500/12"
+                          : "border-white/6 bg-white/2 hover:bg-white/5 hover:border-white/10",
+                        !p.xuid && "opacity-40 cursor-not-allowed"
+                      )}
+                    >
+                      {teamBadge(p.teamNum)}
+                      <span className="text-white/80 text-sm font-medium truncate flex-1">{p.name}</span>
+                      {p.xuid === preselectedSteamId && (
+                        <span className="text-[9px] text-orange-400/60 uppercase tracking-wider">{t("stats.yourAccount")}</span>
+                      )}
+                      {!p.xuid && (
+                        <span className="text-[9px] text-white/20 uppercase tracking-wider">{t("stats.noSteamId")}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {ctPlayers.length > 0 && (
+              <div>
+                <p className="text-blue-400/60 text-[10px] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-blue-500/40 inline-block" />
+                  Counter-Terrorists
+                </p>
+                <div className="space-y-1">
+                  {ctPlayers.map((p, i) => (
+                    <button
+                      key={`ct-${i}`}
+                      onClick={() => handleSelectPlayer(p.xuid, p.name)}
+                      disabled={!p.xuid}
+                      className={cn(
+                        "w-full text-left rounded-xl border px-4 py-3 transition-all flex items-center gap-3",
+                        p.xuid === preselectedSteamId
+                          ? "border-orange-500/30 bg-orange-500/8 hover:bg-orange-500/12"
+                          : "border-white/6 bg-white/2 hover:bg-white/5 hover:border-white/10",
+                        !p.xuid && "opacity-40 cursor-not-allowed"
+                      )}
+                    >
+                      {teamBadge(p.teamNum)}
+                      <span className="text-white/80 text-sm font-medium truncate flex-1">{p.name}</span>
+                      {p.xuid === preselectedSteamId && (
+                        <span className="text-[9px] text-orange-400/60 uppercase tracking-wider">{t("stats.yourAccount")}</span>
+                      )}
+                      {!p.xuid && (
+                        <span className="text-[9px] text-white/20 uppercase tracking-wider">{t("stats.noSteamId")}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {showDeaths && deaths.length === 0 && (
           <div className="flex-1 flex flex-col items-center justify-center py-16 text-white/30">
             <Skull className="w-10 h-10 mb-3 opacity-30" />
             <p className="text-sm">{t("stats.noDeaths")}</p>
@@ -164,10 +306,10 @@ export function StatisticsModal({ demoName, deaths, onClose }: StatisticsModalPr
           </div>
         )}
 
-        {deaths.length > 0 && (
+        {showDeaths && deaths.length > 0 && (
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             {deaths.map((d, i) => (
-              <DeathCard key={i} death={d} index={i} t={t} />
+              <DeathCard key={i} death={d} t={t} />
             ))}
           </div>
         )}

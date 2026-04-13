@@ -41,8 +41,12 @@ const zh = {
   },
   stats: {
     title: "战斗分析",
+    selectPlayer: "选择玩家",
+    yourAccount: "你",
+    noSteamId: "无 Steam ID",
+    noPlayers: "此 Demo 中未找到玩家",
     noDeaths: "未找到死亡记录",
-    noDeathsHint: "在设置中填入你的 Steam ID64，以便解析器识别你的死亡。",
+    noDeathsHint: "该玩家在此 Demo 中没有死亡。",
     crosshairError: "准星",
     fov: "视野内",
     speed: "速度",

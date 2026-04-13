@@ -41,8 +41,12 @@ const ru = {
   },
   stats: {
     title: "Анализ боя",
+    selectPlayer: "Выберите игрока",
+    yourAccount: "Вы",
+    noSteamId: "Нет Steam ID",
+    noPlayers: "В этой демо игроки не найдены",
     noDeaths: "Смерти не найдены",
-    noDeathsHint: "Укажите Steam ID64 в настройках, чтобы парсер мог определить ваши смерти.",
+    noDeathsHint: "У этого игрока не было смертей в демо.",
     crosshairError: "Прицел",
     fov: "В обзоре",
     speed: "Скорость",

@@ -41,8 +41,12 @@ const en = {
   },
   stats: {
     title: "Fight Analysis",
+    selectPlayer: "Select a player",
+    yourAccount: "You",
+    noSteamId: "No Steam ID",
+    noPlayers: "No players found in this demo",
     noDeaths: "No deaths found",
-    noDeathsHint: "Set your Steam ID64 in Settings so the parser can identify your deaths.",
+    noDeathsHint: "This player had no deaths in the demo.",
     crosshairError: "Crosshair",
     fov: "In FOV",
     speed: "Speed",

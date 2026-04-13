@@ -41,8 +41,12 @@ const tr = {
   },
   stats: {
     title: "Dövüş Analizi",
+    selectPlayer: "Oyuncu seç",
+    yourAccount: "Sen",
+    noSteamId: "Steam ID yok",
+    noPlayers: "Bu demoda oyuncu bulunamadı",
     noDeaths: "Ölüm bulunamadı",
-    noDeathsHint: "Ayrıştırıcının ölümlerinizi tanıması için Ayarlar'da Steam ID64'ünüzü girin.",
+    noDeathsHint: "Bu oyuncunun demoda ölümü olmadı.",
     crosshairError: "Nişangah",
     fov: "Görüş alanı",
     speed: "Hız",

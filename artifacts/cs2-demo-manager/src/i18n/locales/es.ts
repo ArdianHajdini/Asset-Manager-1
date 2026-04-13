@@ -41,8 +41,12 @@ const es = {
   },
   stats: {
     title: "Análisis de combate",
+    selectPlayer: "Seleccionar jugador",
+    yourAccount: "Tú",
+    noSteamId: "Sin Steam ID",
+    noPlayers: "No se encontraron jugadores en esta demo",
     noDeaths: "No se encontraron muertes",
-    noDeathsHint: "Configura tu Steam ID64 en Ajustes para que el analizador identifique tus muertes.",
+    noDeathsHint: "Este jugador no tuvo muertes en la demo.",
     crosshairError: "Mira",
     fov: "En FOV",
     speed: "Velocidad",

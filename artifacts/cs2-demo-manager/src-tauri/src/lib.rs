@@ -1777,47 +1777,49 @@ pub mod commands {
                             .ok()
                             .and_then(|v| TryInto::<bool>::try_into(v).ok())
                             .unwrap_or(false);
-                        let victim_name: String = event
-                            .get_value("player_name")
-                            .ok()
-                            .and_then(|v| TryInto::<String>::try_into(v).ok())
-                            .unwrap_or_default();
-                        let killer_name: String = event
-                            .get_value("attacker_name")
-                            .ok()
-                            .and_then(|v| TryInto::<String>::try_into(v).ok())
-                            .unwrap_or_else(|| "Unknown".to_string());
 
-                        // Look up victim steamid by name matching ctrl_name → steamid
-                        let victim_steamid: String = self
+                        let victim_ctrl: u32 = event
+                            .get_value("userid")
+                            .ok()
+                            .and_then(|v| TryInto::<i32>::try_into(v).ok())
+                            .map(|h| (h as u32) & 0x3FFF)
+                            .unwrap_or(0);
+                        let killer_ctrl: u32 = event
+                            .get_value("attacker")
+                            .ok()
+                            .and_then(|v| TryInto::<i32>::try_into(v).ok())
+                            .map(|h| (h as u32) & 0x3FFF)
+                            .unwrap_or(0);
+
+                        let victim_name = self
                             .ctrl_name
-                            .iter()
-                            .find(|(_, n)| n.as_str() == victim_name.as_str())
-                            .and_then(|(ctrl_idx, _)| self.ctrl_steamid.get(ctrl_idx))
+                            .get(&victim_ctrl)
+                            .cloned()
+                            .unwrap_or_default();
+                        let killer_name = self
+                            .ctrl_name
+                            .get(&killer_ctrl)
+                            .cloned()
+                            .unwrap_or_else(|| "Unknown".to_string());
+                        let victim_steamid = self
+                            .ctrl_steamid
+                            .get(&victim_ctrl)
                             .cloned()
                             .unwrap_or_default();
 
-                        // Filter: only record deaths of target player
                         if !self.target_steamid.is_empty()
                             && victim_steamid != self.target_steamid
                         {
                             return Ok(());
                         }
-                        // If no target specified, record all (shouldn't happen in practice)
 
-                        // Get positions via name → ctrl → pawn chain
-                        let get_snap = |name: &str| -> Option<PawnSnapshot> {
-                            let ctrl_idx = self
-                                .ctrl_name
-                                .iter()
-                                .find(|(_, n)| n.as_str() == name)
-                                .map(|(k, _)| *k)?;
-                            let pawn_idx = self.ctrl_to_pawn.get(&ctrl_idx).copied()?;
+                        let get_snap = |ctrl: u32| -> Option<PawnSnapshot> {
+                            let pawn_idx = self.ctrl_to_pawn.get(&ctrl).copied()?;
                             self.pawn_snapshots.get(&pawn_idx).cloned()
                         };
 
-                        let victim_snap = get_snap(&victim_name).unwrap_or_default();
-                        let killer_snap = get_snap(&killer_name).unwrap_or_default();
+                        let victim_snap = get_snap(victim_ctrl).unwrap_or_default();
+                        let killer_snap = get_snap(killer_ctrl).unwrap_or_default();
 
                         let has_pos_data =
                             (victim_snap.x != 0.0 || victim_snap.y != 0.0)

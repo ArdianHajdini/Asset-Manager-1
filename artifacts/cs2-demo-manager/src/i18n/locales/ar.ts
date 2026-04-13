@@ -41,8 +41,12 @@ const ar = {
   },
   stats: {
     title: "تحليل القتال",
+    selectPlayer: "اختر لاعبًا",
+    yourAccount: "أنت",
+    noSteamId: "لا يوجد Steam ID",
+    noPlayers: "لم يتم العثور على لاعبين في هذا العرض",
     noDeaths: "لم يتم العثور على وفيات",
-    noDeathsHint: "قم بتعيين Steam ID64 في الإعدادات ليتمكن المحلل من تحديد وفياتك.",
+    noDeathsHint: "لم يكن لهذا اللاعب وفيات في العرض.",
     crosshairError: "التصويب",
     fov: "في المدى",
     speed: "السرعة",

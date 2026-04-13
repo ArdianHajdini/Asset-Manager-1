@@ -24,9 +24,7 @@ import {
 import {
   isTauri,
   tauriParseDemoPlayers,
-  tauriParseDemoDeaths,
   type TauriDemoPlayer,
-  type TauriDeathEvent,
 } from "../services/tauriBridge";
 import { StatisticsModal } from "./StatisticsModal";
 import { cn } from "@/lib/utils";
@@ -57,9 +55,8 @@ export function DemoCard({ demo }: DemoCardProps) {
   const [showPlayers, setShowPlayers] = useState(false);
 
   const [showStats, setShowStats] = useState(false);
-  const [statsDeaths, setStatsDeaths] = useState<TauriDeathEvent[] | null>(null);
+  const [statsPlayers, setStatsPlayers] = useState<TauriDemoPlayer[] | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
-  const [statsError, setStatsError] = useState<string | null>(null);
   const playdemoArg = buildPlaydemoArg(demo.filename);
 
   const voiceModeLabel = (mode: VoiceMode): string => {
@@ -147,19 +144,20 @@ export function DemoCard({ demo }: DemoCardProps) {
 
   async function handleShowStats() {
     if (!isTauri() || !demo.filepath) return;
-    if (statsDeaths !== null) {
+    if (statsPlayers !== null) {
       setShowStats(true);
       return;
     }
     setStatsLoading(true);
-    setStatsError(null);
     try {
-      const steamId = settings.steamId ?? "";
-      const deaths = await tauriParseDemoDeaths(demo.filepath, steamId);
-      setStatsDeaths(deaths);
+      const players = parsedPlayers ?? await tauriParseDemoPlayers(demo.filepath);
+      if (!parsedPlayers && demo.filepath) {
+        setParsedPlayers(players);
+        setCachedPlayers(demo.filepath, players);
+      }
+      setStatsPlayers(players);
       setShowStats(true);
     } catch (err) {
-      setStatsError(String(err));
       setStatus({ type: "error", message: t("demo.statsError") });
     } finally {
       setStatsLoading(false);
@@ -487,10 +485,12 @@ export function DemoCard({ demo }: DemoCardProps) {
     </div>
 
     {/* Statistics Modal */}
-    {showStats && statsDeaths !== null && (
+    {showStats && statsPlayers !== null && demo.filepath && (
       <StatisticsModal
         demoName={demo.displayName}
-        deaths={statsDeaths}
+        filepath={demo.filepath}
+        players={statsPlayers}
+        preselectedSteamId={settings.steamId}
         onClose={() => setShowStats(false)}
       />
     )}
