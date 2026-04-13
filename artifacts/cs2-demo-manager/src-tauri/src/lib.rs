@@ -1638,7 +1638,9 @@ pub mod commands {
             /// controller entity_index → steamid string
             pub ctrl_steamid: HashMap<u32, String>,
             pub current_round: u32,
-            pub target_steamid: String,
+            /// Filter: only keep deaths where victim_name == this string.
+            /// Empty string = keep all deaths.
+            pub target_player_name: String,
             /// how many controllers we have logged via eprintln (capped at 3)
             pub dbg_ctrl_seen: u32,
             /// how many pawns we have logged via eprintln (capped at 3)
@@ -1654,7 +1656,7 @@ pub mod commands {
                     ctrl_name: HashMap::new(),
                     ctrl_steamid: HashMap::new(),
                     current_round: 0,
-                    target_steamid: String::new(),
+                    target_player_name: String::new(),
                     dbg_ctrl_seen: 0,
                     dbg_pawn_seen: 0,
                 }
@@ -1837,25 +1839,27 @@ pub mod commands {
                             .and_then(|v| TryInto::<bool>::try_into(v).ok())
                             .unwrap_or(false);
 
-                        let victim_ctrl: u32 = event
+                        // Read raw event values for debug logging
+                        let raw_userid: i32 = event
                             .get_value("userid")
                             .ok()
                             .and_then(|v| TryInto::<i32>::try_into(v).ok())
-                            .map(|h| (h as u32) & 0x3FFF)
                             .unwrap_or(0);
-                        let killer_ctrl: u32 = event
+                        let raw_attacker: i32 = event
                             .get_value("attacker")
                             .ok()
                             .and_then(|v| TryInto::<i32>::try_into(v).ok())
-                            .map(|h| (h as u32) & 0x3FFF)
                             .unwrap_or(0);
+
+                        let victim_ctrl: u32 = (raw_userid as u32) & 0x3FFF;
+                        let killer_ctrl: u32 = (raw_attacker as u32) & 0x3FFF;
 
                         let victim_name = self
                             .ctrl_name
                             .get(&victim_ctrl)
                             .cloned()
                             .unwrap_or_else(|| {
-                                eprintln!("[DeathObserver] WARN: unresolved victim controller handle {}", victim_ctrl);
+                                eprintln!("[DeathObserver] WARN: unresolved victim ctrl={} raw={}", victim_ctrl, raw_userid);
                                 String::new()
                             });
                         let killer_name = self
@@ -1864,21 +1868,21 @@ pub mod commands {
                             .cloned()
                             .unwrap_or_else(|| {
                                 if killer_ctrl > 0 {
-                                    eprintln!("[DeathObserver] WARN: unresolved killer controller handle {}", killer_ctrl);
+                                    eprintln!("[DeathObserver] WARN: unresolved killer ctrl={} raw={}", killer_ctrl, raw_attacker);
                                 }
-                                "Unknown".to_string()
+                                "SourceTV".to_string()
                             });
                         let victim_steamid = self
                             .ctrl_steamid
                             .get(&victim_ctrl)
                             .cloned()
-                            .unwrap_or_else(|| {
-                                eprintln!("[DeathObserver] WARN: no steamid for victim controller {}", victim_ctrl);
-                                String::new()
-                            });
+                            .unwrap_or_default();
 
-                        if !self.target_steamid.is_empty()
-                            && victim_steamid != self.target_steamid
+                        // Filter by player name — more reliable than steam ID for FACEIT/proxy demos.
+                        // Both the player list and death events read from m_iszPlayerName, so they
+                        // always match, regardless of account type.
+                        if !self.target_player_name.is_empty()
+                            && victim_name != self.target_player_name
                         {
                             return Ok(());
                         }
@@ -1921,7 +1925,8 @@ pub mod commands {
                             .map(|p| p.to_string())
                             .unwrap_or_else(|| "NONE".to_string());
                         let debug_info = format!(
-                            "vc={} vp={} kc={} kp={} | ctrls:{} pawns:{} | vpos=[{:.0},{:.0},{:.0}] kpos=[{:.0},{:.0},{:.0}] | posData={}",
+                            "uid_raw={} att_raw={} | vc={} vp={} kc={} kp={} | ctrls:{} pawns:{} | vpos=[{:.0},{:.0},{:.0}] kpos=[{:.0},{:.0},{:.0}] | posData={} | victim={:?} killer={:?} sid={:?}",
+                            raw_userid, raw_attacker,
                             victim_ctrl, victim_pawn_str,
                             killer_ctrl, killer_pawn_str,
                             self.ctrl_to_pawn.len(),
@@ -1929,6 +1934,7 @@ pub mod commands {
                             victim_snap.x, victim_snap.y, victim_snap.z,
                             killer_snap.x, killer_snap.y, killer_snap.z,
                             has_pos_data,
+                            victim_name, killer_name, victim_steamid,
                         );
 
                         self.deaths.push(super::super::DemoDeathEvent {
@@ -1962,7 +1968,7 @@ pub mod commands {
     #[tauri::command]
     pub async fn parse_demo_deaths(
         filepath: String,
-        steam_id: String,
+        player_name: String,
     ) -> Result<Vec<super::DemoDeathEvent>, String> {
         use source2_demo::DemoRunner;
 
@@ -1973,7 +1979,7 @@ pub mod commands {
             .map_err(|e| format!("Parser init error: {e}"))?;
 
         let collector = parser.register_observer::<s2_deaths::DeathObserver>();
-        collector.borrow_mut().target_steamid = steam_id;
+        collector.borrow_mut().target_player_name = player_name;
 
         parser
             .run_to_end()

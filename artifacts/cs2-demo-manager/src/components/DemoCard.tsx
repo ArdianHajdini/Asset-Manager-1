@@ -490,7 +490,6 @@ export function DemoCard({ demo }: DemoCardProps) {
         demoName={demo.displayName}
         filepath={demo.filepath}
         players={statsPlayers}
-        preselectedSteamId={settings.steamId}
         onClose={() => setShowStats(false)}
       />
     )}

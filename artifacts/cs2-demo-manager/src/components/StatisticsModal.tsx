@@ -9,7 +9,6 @@ interface StatisticsModalProps {
   demoName: string;
   filepath: string;
   players: TauriDemoPlayer[];
-  preselectedSteamId?: string;
   onClose: () => void;
 }
 
@@ -159,7 +158,7 @@ function teamBadge(teamNum: number) {
   return null;
 }
 
-export function StatisticsModal({ demoName, filepath, players, preselectedSteamId, onClose }: StatisticsModalProps) {
+export function StatisticsModal({ demoName, filepath, players, onClose }: StatisticsModalProps) {
   const { t } = useTranslation();
   const [deaths, setDeaths] = useState<TauriDeathEvent[] | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
@@ -170,18 +169,29 @@ export function StatisticsModal({ demoName, filepath, players, preselectedSteamI
   const tPlayers = activePlayers.filter(p => p.teamNum === 2);
   const ctPlayers = activePlayers.filter(p => p.teamNum === 3);
 
-  async function handleSelectPlayer(steamId: string, name: string) {
+  async function handleSelectPlayer(name: string) {
     setSelectedPlayer(name);
     setLoading(true);
     setError(null);
     try {
-      const result = await tauriParseDemoDeaths(filepath, steamId);
+      const result = await tauriParseDemoDeaths(filepath, name);
       setDeaths(result);
     } catch (err) {
       setError(String(err));
     } finally {
       setLoading(false);
     }
+  }
+
+  function copyAllDebug() {
+    if (!deaths) return;
+    const lines = deaths.map((d, i) =>
+      `[${i + 1}] R${d.round} ${d.killerName}→${d.victimName} ${d.weapon}${d.headshot ? " HS" : ""} | ${d.debugInfo}`
+    );
+    const text = lines.join("\n");
+    navigator.clipboard.writeText(text).catch(() => {
+      prompt("Copy debug output:", text);
+    });
   }
 
   function handleBack() {
@@ -254,24 +264,16 @@ export function StatisticsModal({ demoName, filepath, players, preselectedSteamI
                   {tPlayers.map((p, i) => (
                     <button
                       key={`t-${i}`}
-                      onClick={() => handleSelectPlayer(p.xuid, p.name)}
-                      disabled={!p.xuid}
+                      onClick={() => handleSelectPlayer(p.name)}
+                      disabled={!p.name}
                       className={cn(
                         "w-full text-left rounded-xl border px-4 py-3 transition-all flex items-center gap-3",
-                        p.xuid === preselectedSteamId
-                          ? "border-orange-500/30 bg-orange-500/8 hover:bg-orange-500/12"
-                          : "border-white/6 bg-white/2 hover:bg-white/5 hover:border-white/10",
-                        !p.xuid && "opacity-40 cursor-not-allowed"
+                        "border-white/6 bg-white/2 hover:bg-white/5 hover:border-white/10",
+                        !p.name && "opacity-40 cursor-not-allowed"
                       )}
                     >
                       {teamBadge(p.teamNum)}
                       <span className="text-white/80 text-sm font-medium truncate flex-1">{p.name}</span>
-                      {p.xuid === preselectedSteamId && (
-                        <span className="text-[9px] text-orange-400/60 uppercase tracking-wider">{t("stats.yourAccount")}</span>
-                      )}
-                      {!p.xuid && (
-                        <span className="text-[9px] text-white/20 uppercase tracking-wider">{t("stats.noSteamId")}</span>
-                      )}
                     </button>
                   ))}
                 </div>
@@ -288,24 +290,16 @@ export function StatisticsModal({ demoName, filepath, players, preselectedSteamI
                   {ctPlayers.map((p, i) => (
                     <button
                       key={`ct-${i}`}
-                      onClick={() => handleSelectPlayer(p.xuid, p.name)}
-                      disabled={!p.xuid}
+                      onClick={() => handleSelectPlayer(p.name)}
+                      disabled={!p.name}
                       className={cn(
                         "w-full text-left rounded-xl border px-4 py-3 transition-all flex items-center gap-3",
-                        p.xuid === preselectedSteamId
-                          ? "border-orange-500/30 bg-orange-500/8 hover:bg-orange-500/12"
-                          : "border-white/6 bg-white/2 hover:bg-white/5 hover:border-white/10",
-                        !p.xuid && "opacity-40 cursor-not-allowed"
+                        "border-white/6 bg-white/2 hover:bg-white/5 hover:border-white/10",
+                        !p.name && "opacity-40 cursor-not-allowed"
                       )}
                     >
                       {teamBadge(p.teamNum)}
                       <span className="text-white/80 text-sm font-medium truncate flex-1">{p.name}</span>
-                      {p.xuid === preselectedSteamId && (
-                        <span className="text-[9px] text-orange-400/60 uppercase tracking-wider">{t("stats.yourAccount")}</span>
-                      )}
-                      {!p.xuid && (
-                        <span className="text-[9px] text-white/20 uppercase tracking-wider">{t("stats.noSteamId")}</span>
-                      )}
                     </button>
                   ))}
                 </div>
@@ -324,6 +318,15 @@ export function StatisticsModal({ demoName, filepath, players, preselectedSteamI
 
         {showDeaths && deaths.length > 0 && (
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            <div className="flex justify-end">
+              <button
+                onClick={copyAllDebug}
+                className="px-2 py-1 rounded text-[9px] font-mono text-white/20 hover:text-white/50 hover:bg-white/8 transition-all border border-white/8"
+                title="Copy all debug info to clipboard"
+              >
+                [copy all debug]
+              </button>
+            </div>
             {deaths.map((d, i) => (
               <DeathCard key={i} death={d} t={t} />
             ))}

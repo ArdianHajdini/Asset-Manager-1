@@ -245,16 +245,16 @@ export interface TauriDeathEvent {
 }
 
 /**
- * Parse death events for the local player from a CS2 demo.
- * steamId: Steam ID64 string of the local player.
- * Returns a list of death events sorted by tick.
+ * Parse death events for the selected player from a CS2 demo.
+ * playerName: exact in-game name of the player (from demo's m_iszPlayerName).
+ * Returns all deaths where the victim's name matches playerName.
  */
 export async function tauriParseDemoDeaths(
   filepath: string,
-  steamId: string,
+  playerName: string,
 ): Promise<TauriDeathEvent[]> {
   const invoke = await getInvoke();
-  return invoke<TauriDeathEvent[]>("parse_demo_deaths", { filepath, steamId });
+  return invoke<TauriDeathEvent[]>("parse_demo_deaths", { filepath, playerName });
 }
 
 /**
