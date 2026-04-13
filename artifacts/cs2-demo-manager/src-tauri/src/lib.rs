@@ -78,6 +78,9 @@ pub struct DemoDeathEvent {
     /// True if position data was successfully extracted from entities
     #[serde(rename = "hasPosData")]
     pub has_pos_data: bool,
+    /// One-line diagnostic string for in-app debugging (always populated)
+    #[serde(rename = "debugInfo")]
+    pub debug_info: String,
 }
 
 /// A player entry extracted from a CS2 demo file.
@@ -1626,7 +1629,7 @@ pub mod commands {
 
         pub struct DeathObserver {
             pub deaths: Vec<super::super::DemoDeathEvent>,
-            /// controller entity_index → pawn entity_index (from m_hPawn)
+            /// controller entity_index → pawn entity_index (from m_hPlayerPawn)
             pub ctrl_to_pawn: HashMap<u32, u32>,
             /// pawn entity_index → latest snapshot
             pub pawn_snapshots: HashMap<u32, PawnSnapshot>,
@@ -1636,6 +1639,10 @@ pub mod commands {
             pub ctrl_steamid: HashMap<u32, String>,
             pub current_round: u32,
             pub target_steamid: String,
+            /// how many controllers we have logged via eprintln (capped at 3)
+            pub dbg_ctrl_seen: u32,
+            /// how many pawns we have logged via eprintln (capped at 3)
+            pub dbg_pawn_seen: u32,
         }
 
         impl Default for DeathObserver {
@@ -1648,6 +1655,8 @@ pub mod commands {
                     ctrl_steamid: HashMap::new(),
                     current_round: 0,
                     target_steamid: String::new(),
+                    dbg_ctrl_seen: 0,
+                    dbg_pawn_seen: 0,
                 }
             }
         }
@@ -1739,6 +1748,14 @@ pub mod commands {
                     let pawn_handle = get_u32(entity, "m_hPlayerPawn");
                     let pawn_idx = pawn_handle & 0x3FFF;
 
+                    if self.dbg_ctrl_seen < 3 {
+                        eprintln!(
+                            "[DBG ctrl] entity_idx={} name={:?} steamid={} pawn_handle=0x{:X} pawn_idx={}",
+                            idx, name, steamid, pawn_handle, pawn_idx
+                        );
+                        self.dbg_ctrl_seen += 1;
+                    }
+
                     if !name.is_empty() {
                         self.ctrl_name.insert(idx, name);
                     }
@@ -1767,6 +1784,14 @@ pub mod commands {
                     let vec_y  = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecY");
                     let cell_z = get_u32(entity, "CBodyComponentBaseAnimGraph.m_cellZ");
                     let vec_z  = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecZ");
+
+                    if self.dbg_pawn_seen < 3 {
+                        eprintln!(
+                            "[DBG pawn] entity_idx={} cell=({},{},{}) vec=({:.1},{:.1},{:.1})",
+                            idx, cell_x, cell_y, cell_z, vec_x, vec_y, vec_z
+                        );
+                        self.dbg_pawn_seen += 1;
+                    }
 
                     if cell_x > 0 || cell_y > 0 || cell_z > 0 {
                         snap.x = (cell_x as f32) * CELL_SIZE + vec_x - MAX_COORD;
@@ -1886,6 +1911,26 @@ pub mod commands {
                         // CS2 demos run at 64 ticks per second
                         let time_seconds = tick as f32 / 64.0;
 
+                        // Build a diagnostic string that is always returned to the frontend
+                        let victim_pawn_str = self.ctrl_to_pawn
+                            .get(&victim_ctrl)
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "NONE".to_string());
+                        let killer_pawn_str = self.ctrl_to_pawn
+                            .get(&killer_ctrl)
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "NONE".to_string());
+                        let debug_info = format!(
+                            "vc={} vp={} kc={} kp={} | ctrls:{} pawns:{} | vpos=[{:.0},{:.0},{:.0}] kpos=[{:.0},{:.0},{:.0}] | posData={}",
+                            victim_ctrl, victim_pawn_str,
+                            killer_ctrl, killer_pawn_str,
+                            self.ctrl_to_pawn.len(),
+                            self.pawn_snapshots.len(),
+                            victim_snap.x, victim_snap.y, victim_snap.z,
+                            killer_snap.x, killer_snap.y, killer_snap.z,
+                            has_pos_data,
+                        );
+
                         self.deaths.push(super::super::DemoDeathEvent {
                             round: self.current_round,
                             tick,
@@ -1904,6 +1949,7 @@ pub mod commands {
                             was_enemy_in_fov,
                             shot_before_stop: speed > 10.0,
                             has_pos_data,
+                            debug_info,
                         });
                     }
                     _ => {}

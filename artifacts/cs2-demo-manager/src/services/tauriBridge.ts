@@ -241,6 +241,7 @@ export interface TauriDeathEvent {
   wasEnemyInFov: boolean;
   shotBeforeStop: boolean;
   hasPosData: boolean;
+  debugInfo: string;
 }
 
 /**

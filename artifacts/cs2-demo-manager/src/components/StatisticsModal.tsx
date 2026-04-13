@@ -68,6 +68,7 @@ function MetricBadge({ label, value, color, icon }: { label: string; value: stri
 }
 
 function DeathCard({ death, t }: { death: TauriDeathEvent; t: (key: string) => string }) {
+  const [showDebug, setShowDebug] = useState(false);
   const verdict = getVerdict(death, t);
   const crosshairColor = !death.hasPosData ? "text-white/20"
     : death.crosshairErrorDeg < 15 ? "text-green-400"
@@ -96,6 +97,13 @@ function DeathCard({ death, t }: { death: TauriDeathEvent; t: (key: string) => s
             <span>{formatTime(death.timeSeconds)}</span>
           </div>
         </div>
+        <button
+          onClick={() => setShowDebug(v => !v)}
+          className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono text-white/20 hover:text-white/50 hover:bg-white/8 transition-all border border-white/8"
+          title="Toggle debug info"
+        >
+          dbg
+        </button>
       </div>
 
       <div className="p-3 space-y-3">
@@ -127,6 +135,14 @@ function DeathCard({ death, t }: { death: TauriDeathEvent; t: (key: string) => s
         </div>
 
         {death.hasPosData && <FightDiagram death={death} t={t} />}
+
+        {showDebug && (
+          <div className="px-2.5 py-2 rounded-lg bg-black/40 border border-white/6 overflow-x-auto">
+            <p className="text-[9px] font-mono text-white/40 whitespace-pre break-all leading-relaxed">
+              {death.debugInfo || "(no debugInfo)"}
+            </p>
+          </div>
+        )}
 
         <div className={cn("flex items-start gap-2 px-3 py-2 rounded-lg bg-white/3 border border-white/6", verdict.color)}>
           <Skull className="w-3.5 h-3.5 shrink-0 mt-0.5" />
