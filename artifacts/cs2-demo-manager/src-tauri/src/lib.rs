@@ -1734,8 +1734,9 @@ pub mod commands {
                 if class == "CCSPlayerController" {
                     let name = get_str(entity, "m_iszPlayerName");
                     let steamid = get_u64(entity, "m_steamID");
-                    // m_hPawn handle: lower 14 bits = entity index in Source2
-                    let pawn_handle = get_u32(entity, "m_hPawn");
+                    // In CS2 PBDEMS2 format, the pawn handle property is m_hPlayerPawn
+                    // (demoparser: CCSPlayerController.m_hPlayerPawn). Lower 14 bits = pawn entity index.
+                    let pawn_handle = get_u32(entity, "m_hPlayerPawn");
                     let pawn_idx = pawn_handle & 0x3FFF;
 
                     if !name.is_empty() {
@@ -1744,46 +1745,48 @@ pub mod commands {
                     if steamid > 76_561_197_960_265_728 {
                         self.ctrl_steamid.insert(idx, steamid.to_string());
                     }
-                    if pawn_idx > 0 && pawn_idx < 2048 {
+                    if pawn_idx > 0 && pawn_idx < 4096 {
                         self.ctrl_to_pawn.insert(idx, pawn_idx);
                     }
                 }
 
                 if class == "CCSPlayerPawn" {
                     let snap = self.pawn_snapshots.entry(idx).or_default();
-                    // m_vecAbsOrigin is a FieldValue::Vector — must use get_vec3, not get_f32
-                    let origin = get_vec3(entity, "m_vecAbsOrigin");
-                    snap.x = origin[0];
-                    snap.y = origin[1];
-                    snap.z = origin[2];
-                    if snap.x == 0.0 && snap.y == 0.0 {
-                        // Fallback: try game-scene-node path and body component
-                        let alt = get_vec3(entity, "m_pGameSceneNode.m_vecAbsOrigin");
-                        if alt[0] != 0.0 || alt[1] != 0.0 {
-                            snap.x = alt[0];
-                            snap.y = alt[1];
-                            snap.z = alt[2];
-                        } else {
-                            let alt2 = get_vec3(entity, "CBodyComponentPoint.m_vecOrigin");
-                            snap.x = alt2[0];
-                            snap.y = alt2[1];
-                            snap.z = alt2[2];
-                        }
+
+                    // CS2 PBDEMS2 stores positions via a cell-based coordinate system on the
+                    // CBodyComponentBaseAnimGraph sub-object (confirmed from demoparser source).
+                    // Formula: world_coord = cell * CELL_SIZE + vec_offset - MAX_COORD
+                    //   CELL_SIZE = 512  (CELL_BITS = 9)
+                    //   MAX_COORD = 16384 (world half-extent)
+                    const CELL_SIZE: f32 = 512.0;
+                    const MAX_COORD: f32 = 16384.0;
+
+                    let cell_x = get_u32(entity, "CBodyComponentBaseAnimGraph.m_cellX");
+                    let vec_x  = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecX");
+                    let cell_y = get_u32(entity, "CBodyComponentBaseAnimGraph.m_cellY");
+                    let vec_y  = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecY");
+                    let cell_z = get_u32(entity, "CBodyComponentBaseAnimGraph.m_cellZ");
+                    let vec_z  = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecZ");
+
+                    if cell_x > 0 || cell_y > 0 || cell_z > 0 {
+                        snap.x = (cell_x as f32) * CELL_SIZE + vec_x - MAX_COORD;
+                        snap.y = (cell_y as f32) * CELL_SIZE + vec_y - MAX_COORD;
+                        snap.z = (cell_z as f32) * CELL_SIZE + vec_z - MAX_COORD;
                     }
-                    // m_angEyeAngles is a QAngle (FieldValue::Vector) — [pitch, yaw, roll]
+
+                    // m_angEyeAngles: QAngle stored as Vector3D [pitch, yaw, roll]
                     let angles = get_vec3(entity, "m_angEyeAngles");
                     if angles[0] != 0.0 || angles[1] != 0.0 {
                         snap.eye_pitch = angles[0];
                         snap.eye_yaw   = angles[1];
                     } else {
-                        // Some builds store angles as separate indexed scalars
                         snap.eye_pitch = get_f32(entity, "m_angEyeAngles[0]");
                         snap.eye_yaw   = get_f32(entity, "m_angEyeAngles[1]");
                     }
-                    // m_vecAbsVelocity is also a FieldValue::Vector
-                    let vel = get_vec3(entity, "m_vecAbsVelocity");
-                    snap.vel_x = vel[0];
-                    snap.vel_y = vel[1];
+
+                    // Velocity components (m_vecVelocity on body component)
+                    snap.vel_x = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecVX");
+                    snap.vel_y = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecVY");
                 }
 
                 Ok(())
@@ -1863,12 +1866,16 @@ pub mod commands {
                         let victim_snap = get_snap(victim_ctrl).unwrap_or_default();
                         let killer_snap = get_snap(killer_ctrl).unwrap_or_default();
 
-                        let has_pos_data =
-                            (victim_snap.x != 0.0 || victim_snap.y != 0.0)
-                                && (killer_snap.x != 0.0 || killer_snap.y != 0.0);
+                        // has_pos_data is true as long as the victim has a valid position.
+                        // Killer position may be absent for SourceTV kills, fall damage, etc.
+                        let has_pos_data = victim_snap.x != 0.0 || victim_snap.y != 0.0;
+
+                        // Crosshair error only makes sense when BOTH positions are known.
+                        let both_positions = has_pos_data
+                            && (killer_snap.x != 0.0 || killer_snap.y != 0.0);
 
                         let (crosshair_error_deg, was_enemy_in_fov) =
-                            if has_pos_data {
+                            if both_positions {
                                 crosshair_error(&victim_snap, &killer_snap)
                             } else {
                                 (0.0, false)
