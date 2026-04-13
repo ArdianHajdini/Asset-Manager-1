@@ -1656,15 +1656,26 @@ pub mod commands {
             entity
                 .get_property_by_name(name)
                 .ok()
-                .and_then(|v| v.try_into().ok())
+                .and_then(|v| TryInto::<f32>::try_into(v).ok())
                 .unwrap_or(0.0_f32)
+        }
+
+        /// Read a Vec3 / QAngle property and return its components as [x, y, z].
+        /// FieldValue::Vector(x, y, z) cannot be converted to f32 directly —
+        /// use this helper for m_vecAbsOrigin, m_vecAbsVelocity, m_angEyeAngles.
+        fn get_vec3(entity: &Entity, name: &str) -> [f32; 3] {
+            entity
+                .get_property_by_name(name)
+                .ok()
+                .and_then(|v| TryInto::<[f32; 3]>::try_into(v).ok())
+                .unwrap_or([0.0, 0.0, 0.0])
         }
 
         fn get_u64(entity: &Entity, name: &str) -> u64 {
             entity
                 .get_property_by_name(name)
                 .ok()
-                .and_then(|v| v.try_into().ok())
+                .and_then(|v| TryInto::<u64>::try_into(v).ok())
                 .unwrap_or(0_u64)
         }
 
@@ -1672,7 +1683,7 @@ pub mod commands {
             entity
                 .get_property_by_name(name)
                 .ok()
-                .and_then(|v| v.try_into().ok())
+                .and_then(|v| TryInto::<u32>::try_into(v).ok())
                 .unwrap_or(0_u32)
         }
 
@@ -1680,7 +1691,7 @@ pub mod commands {
             entity
                 .get_property_by_name(name)
                 .ok()
-                .and_then(|v| v.try_into().ok())
+                .and_then(|v| TryInto::<String>::try_into(v).ok())
                 .unwrap_or_default()
         }
 
@@ -1740,19 +1751,39 @@ pub mod commands {
 
                 if class == "CCSPlayerPawn" {
                     let snap = self.pawn_snapshots.entry(idx).or_default();
-                    // Try primary property path, then fallback
-                    snap.x = get_f32(entity, "m_vecAbsOrigin.x");
-                    snap.y = get_f32(entity, "m_vecAbsOrigin.y");
-                    snap.z = get_f32(entity, "m_vecAbsOrigin.z");
+                    // m_vecAbsOrigin is a FieldValue::Vector — must use get_vec3, not get_f32
+                    let origin = get_vec3(entity, "m_vecAbsOrigin");
+                    snap.x = origin[0];
+                    snap.y = origin[1];
+                    snap.z = origin[2];
                     if snap.x == 0.0 && snap.y == 0.0 {
-                        snap.x = get_f32(entity, "CBodyComponentPoint.m_vecOrigin.x");
-                        snap.y = get_f32(entity, "CBodyComponentPoint.m_vecOrigin.y");
-                        snap.z = get_f32(entity, "CBodyComponentPoint.m_vecOrigin.z");
+                        // Fallback: try game-scene-node path and body component
+                        let alt = get_vec3(entity, "m_pGameSceneNode.m_vecAbsOrigin");
+                        if alt[0] != 0.0 || alt[1] != 0.0 {
+                            snap.x = alt[0];
+                            snap.y = alt[1];
+                            snap.z = alt[2];
+                        } else {
+                            let alt2 = get_vec3(entity, "CBodyComponentPoint.m_vecOrigin");
+                            snap.x = alt2[0];
+                            snap.y = alt2[1];
+                            snap.z = alt2[2];
+                        }
                     }
-                    snap.eye_yaw = get_f32(entity, "m_angEyeAngles[1]");
-                    snap.eye_pitch = get_f32(entity, "m_angEyeAngles[0]");
-                    snap.vel_x = get_f32(entity, "m_vecAbsVelocity.x");
-                    snap.vel_y = get_f32(entity, "m_vecAbsVelocity.y");
+                    // m_angEyeAngles is a QAngle (FieldValue::Vector) — [pitch, yaw, roll]
+                    let angles = get_vec3(entity, "m_angEyeAngles");
+                    if angles[0] != 0.0 || angles[1] != 0.0 {
+                        snap.eye_pitch = angles[0];
+                        snap.eye_yaw   = angles[1];
+                    } else {
+                        // Some builds store angles as separate indexed scalars
+                        snap.eye_pitch = get_f32(entity, "m_angEyeAngles[0]");
+                        snap.eye_yaw   = get_f32(entity, "m_angEyeAngles[1]");
+                    }
+                    // m_vecAbsVelocity is also a FieldValue::Vector
+                    let vel = get_vec3(entity, "m_vecAbsVelocity");
+                    snap.vel_x = vel[0];
+                    snap.vel_y = vel[1];
                 }
 
                 Ok(())
