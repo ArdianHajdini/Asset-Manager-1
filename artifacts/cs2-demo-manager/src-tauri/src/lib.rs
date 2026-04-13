@@ -1631,12 +1631,8 @@ pub mod commands {
             pub deaths: Vec<super::super::DemoDeathEvent>,
             /// controller entity_index → pawn entity_index (from m_hPlayerPawn)
             pub ctrl_to_pawn: HashMap<u32, u32>,
-            /// pawn entity_index → latest snapshot (eye angles, velocity; no XYZ — those come from GSN)
+            /// pawn entity_index → latest snapshot (eye angles, velocity, XYZ position)
             pub pawn_snapshots: HashMap<u32, PawnSnapshot>,
-            /// pawn entity_index → game-scene-node entity_index (from m_pGameSceneNode handle)
-            pub pawn_to_gsn: HashMap<u32, u32>,
-            /// game-scene-node entity_index → latest position snapshot (XYZ only)
-            pub gsn_snapshots: HashMap<u32, PawnSnapshot>,
             /// controller entity_index → player name
             pub ctrl_name: HashMap<u32, String>,
             /// controller entity_index → steamid string
@@ -1657,8 +1653,6 @@ pub mod commands {
                     deaths: Vec::new(),
                     ctrl_to_pawn: HashMap::new(),
                     pawn_snapshots: HashMap::new(),
-                    pawn_to_gsn: HashMap::new(),
-                    gsn_snapshots: HashMap::new(),
                     ctrl_name: HashMap::new(),
                     ctrl_steamid: HashMap::new(),
                     current_round: 0,
@@ -1783,60 +1777,17 @@ pub mod commands {
                     //   CELL_SIZE = 512  (CELL_BITS = 9)
                     //   MAX_COORD = 16384 (world half-extent)
                     //
-                    // We try three property-path formats in order (different source2-demo
-                    // versions and serialiser trees expose the same data under different names):
-                    //   1. m_pGameSceneNode.m_cellX  ← most common in CS2 PBDEMS2
-                    //   2. CBodyComponentBaseAnimGraph.m_cellX  ← older/alt naming
-                    //   3. m_cellX  ← flat namespace (some serialiser configurations)
+                    // source2-demo 0.4 exposes these as "CBodyComponent.m_cellX" (u8)
+                    // and "CBodyComponent.m_vecX" (f32) on CCSPlayerPawn.
                     const CELL_SIZE: f32 = 512.0;
                     const MAX_COORD: f32 = 16384.0;
 
-                    // Helper: try a list of paths, return first non-zero u32
-                    let try_u32 = |paths: &[&str]| -> u32 {
-                        for &p in paths {
-                            let v = get_u32(entity, p);
-                            if v != 0 { return v; }
-                        }
-                        0u32
-                    };
-                    let try_f32 = |paths: &[&str]| -> f32 {
-                        for &p in paths {
-                            let v = get_f32(entity, p);
-                            if v != 0.0 { return v; }
-                        }
-                        0.0f32
-                    };
-
-                    let cell_x = try_u32(&[
-                        "m_pGameSceneNode.m_cellX",
-                        "CBodyComponentBaseAnimGraph.m_cellX",
-                        "m_cellX",
-                    ]);
-                    let cell_y = try_u32(&[
-                        "m_pGameSceneNode.m_cellY",
-                        "CBodyComponentBaseAnimGraph.m_cellY",
-                        "m_cellY",
-                    ]);
-                    let cell_z = try_u32(&[
-                        "m_pGameSceneNode.m_cellZ",
-                        "CBodyComponentBaseAnimGraph.m_cellZ",
-                        "m_cellZ",
-                    ]);
-                    let vec_x = try_f32(&[
-                        "m_pGameSceneNode.m_vecX",
-                        "CBodyComponentBaseAnimGraph.m_vecX",
-                        "m_vecX",
-                    ]);
-                    let vec_y = try_f32(&[
-                        "m_pGameSceneNode.m_vecY",
-                        "CBodyComponentBaseAnimGraph.m_vecY",
-                        "m_vecY",
-                    ]);
-                    let vec_z = try_f32(&[
-                        "m_pGameSceneNode.m_vecZ",
-                        "CBodyComponentBaseAnimGraph.m_vecZ",
-                        "m_vecZ",
-                    ]);
+                    let cell_x = get_u32(entity, "CBodyComponent.m_cellX");
+                    let cell_y = get_u32(entity, "CBodyComponent.m_cellY");
+                    let cell_z = get_u32(entity, "CBodyComponent.m_cellZ");
+                    let vec_x  = get_f32(entity, "CBodyComponent.m_vecX");
+                    let vec_y  = get_f32(entity, "CBodyComponent.m_vecY");
+                    let vec_z  = get_f32(entity, "CBodyComponent.m_vecZ");
 
                     if self.dbg_pawn_seen < 3 {
                         eprintln!(
@@ -1863,60 +1814,8 @@ pub mod commands {
                     }
 
                     // Velocity components
-                    snap.vel_x = try_f32(&[
-                        "m_pGameSceneNode.m_vecVX",
-                        "CBodyComponentBaseAnimGraph.m_vecVX",
-                        "m_vecVX",
-                    ]);
-                    snap.vel_y = try_f32(&[
-                        "m_pGameSceneNode.m_vecVY",
-                        "CBodyComponentBaseAnimGraph.m_vecVY",
-                        "m_vecVY",
-                    ]);
-
-                    // Link pawn → game-scene-node via the handle property.
-                    // CGameSceneNode (a separate entity) holds the cell-based position.
-                    // Handle format in CS2 PBDEMS2: lower 14 bits = entity index.
-                    let gsn_handle = get_u32(entity, "m_pGameSceneNode");
-                    if gsn_handle > 0 {
-                        let gsn_idx = gsn_handle & 0x3FFF;
-                        if gsn_idx > 0 && gsn_idx < 4096 {
-                            self.pawn_to_gsn.insert(idx, gsn_idx);
-                        }
-                    }
-                }
-
-                // ── CGameSceneNode: track cell-based world position ─────────
-                // In CS2 PBDEMS2 format, player world-position is NOT stored on
-                // CCSPlayerPawn directly.  It lives on a separate CGameSceneNode
-                // entity (referenced by the pawn's m_pGameSceneNode handle).
-                // The cell formula: world = cell * 512 + vec_offset - 16384
-                if class == "CGameSceneNode" {
-                    const CELL_SIZE: f32 = 512.0;
-                    const MAX_COORD: f32 = 16384.0;
-
-                    let cell_x = get_u32(entity, "m_cellX");
-                    let cell_y = get_u32(entity, "m_cellY");
-                    let cell_z = get_u32(entity, "m_cellZ");
-                    let vec_x  = get_f32(entity, "m_vecX");
-                    let vec_y  = get_f32(entity, "m_vecY");
-                    let vec_z  = get_f32(entity, "m_vecZ");
-
-                    if cell_x > 0 || cell_y > 0 || cell_z > 0 {
-                        let snap = self.gsn_snapshots.entry(idx).or_default();
-                        snap.x = (cell_x as f32) * CELL_SIZE + vec_x - MAX_COORD;
-                        snap.y = (cell_y as f32) * CELL_SIZE + vec_y - MAX_COORD;
-                        snap.z = (cell_z as f32) * CELL_SIZE + vec_z - MAX_COORD;
-
-                        if self.dbg_pawn_seen < 3 {
-                            eprintln!(
-                                "[DBG gsn] entity_idx={} cell=({},{},{}) vec=({:.1},{:.1},{:.1}) → pos=({:.0},{:.0},{:.0})",
-                                idx, cell_x, cell_y, cell_z, vec_x, vec_y, vec_z,
-                                snap.x, snap.y, snap.z,
-                            );
-                            self.dbg_pawn_seen += 1;
-                        }
-                    }
+                    snap.vel_x = get_f32(entity, "m_vecVelocity[0]");
+                    snap.vel_y = get_f32(entity, "m_vecVelocity[1]");
                 }
 
                 Ok(())
@@ -1990,27 +1889,14 @@ pub mod commands {
                             return Ok(());
                         }
 
-                        // Build a snapshot for a given controller:
-                        //   - Eye angles + velocity come from the CCSPlayerPawn snapshot
-                        //   - XYZ world position comes from the linked CGameSceneNode snapshot
+                        // Build a snapshot for a given controller.
+                        // All position + angles + velocity come from the CCSPlayerPawn snapshot.
                         let get_snap = |ctrl: u32| -> Option<PawnSnapshot> {
                             let pawn_idx = self.ctrl_to_pawn.get(&ctrl).copied()?;
-                            let mut snap = self.pawn_snapshots
+                            Some(self.pawn_snapshots
                                 .get(&pawn_idx)
                                 .cloned()
-                                .unwrap_or_default();
-
-                            // Prefer CGameSceneNode position (the cell coords live there)
-                            if let Some(&gsn_idx) = self.pawn_to_gsn.get(&pawn_idx) {
-                                if let Some(gsn) = self.gsn_snapshots.get(&gsn_idx) {
-                                    if gsn.x != 0.0 || gsn.y != 0.0 || gsn.z != 0.0 {
-                                        snap.x = gsn.x;
-                                        snap.y = gsn.y;
-                                        snap.z = gsn.z;
-                                    }
-                                }
-                            }
-                            Some(snap)
+                                .unwrap_or_default())
                         };
 
                         let victim_snap = get_snap(victim_ctrl).unwrap_or_default();
@@ -2045,18 +1931,11 @@ pub mod commands {
                             .get(&killer_ctrl)
                             .map(|p| p.to_string())
                             .unwrap_or_else(|| "NONE".to_string());
-                        let victim_pawn_idx_opt = self.ctrl_to_pawn.get(&victim_ctrl).copied();
-                        let victim_gsn_str = victim_pawn_idx_opt
-                            .and_then(|pi| self.pawn_to_gsn.get(&pi).copied())
-                            .map(|gi| gi.to_string())
-                            .unwrap_or_else(|| "NONE".to_string());
                         let debug_info = format!(
-                            "uid_raw={} att_raw={} | vc={} vp={} kc={} kp={} | gsn:{} gsns:{} | vpos=[{:.0},{:.0},{:.0}] kpos=[{:.0},{:.0},{:.0}] | posData={} | victim={:?} killer={:?} sid={:?}",
+                            "uid_raw={} att_raw={} | vc={} vp={} kc={} kp={} | vpos=[{:.0},{:.0},{:.0}] kpos=[{:.0},{:.0},{:.0}] | posData={} | victim={:?} killer={:?} sid={:?}",
                             raw_userid, raw_attacker,
                             victim_ctrl, victim_pawn_str,
                             killer_ctrl, killer_pawn_str,
-                            victim_gsn_str,
-                            self.gsn_snapshots.len(),
                             victim_snap.x, victim_snap.y, victim_snap.z,
                             killer_snap.x, killer_snap.y, killer_snap.z,
                             has_pos_data,
@@ -2101,59 +1980,44 @@ pub mod commands {
 
         pub struct PropProbe {
             pub pawn_count: u32,
-            pub gsn_count: u32,
             pub lines: Vec<String>,
         }
 
         impl Default for PropProbe {
             fn default() -> Self {
-                Self { pawn_count: 0, gsn_count: 0, lines: Vec::new() }
+                Self { pawn_count: 0, lines: Vec::new() }
             }
         }
 
-        // All candidate paths — grouped by expected type.
+        // Property paths to probe on CCSPlayerPawn.
         const PROBE_U32: &[&str] = &[
-            // Flat names
-            "m_cellX", "m_cellY", "m_cellZ",
-            // Via m_pGameSceneNode
-            "m_pGameSceneNode.m_cellX",
-            "m_pGameSceneNode.m_cellY",
-            "m_pGameSceneNode.m_cellZ",
-            // Via CBodyComponentBaseAnimGraph
-            "CBodyComponentBaseAnimGraph.m_cellX",
-            "CBodyComponentBaseAnimGraph.m_cellY",
-            "CBodyComponentBaseAnimGraph.m_cellZ",
-            // Game-scene-node handle on the pawn (CRITICAL: tells us the GSN entity index)
-            "m_pGameSceneNode",
-            // Controller/pawn handles on pawn entity
+            // Cell-based position (correct path per source2-demo docs)
+            "CBodyComponent.m_cellX",
+            "CBodyComponent.m_cellY",
+            "CBodyComponent.m_cellZ",
+            // Controller/pawn handles
             "m_hController",
             "m_hPlayerPawn",
-            // Health (to verify u32 lookup works at all on pawn entity)
+            // Health (sanity check)
             "m_iHealth",
         ];
 
         const PROBE_F32: &[&str] = &[
-            // Flat names
-            "m_vecX", "m_vecY", "m_vecZ",
-            // Via m_pGameSceneNode
-            "m_pGameSceneNode.m_vecX",
-            "m_pGameSceneNode.m_vecY",
-            "m_pGameSceneNode.m_vecZ",
-            // Via CBodyComponentBaseAnimGraph
-            "CBodyComponentBaseAnimGraph.m_vecX",
-            "CBodyComponentBaseAnimGraph.m_vecY",
-            "CBodyComponentBaseAnimGraph.m_vecZ",
-            // Eye angles (should be non-zero if player is alive)
+            // Vec offsets within cell (correct path)
+            "CBodyComponent.m_vecX",
+            "CBodyComponent.m_vecY",
+            "CBodyComponent.m_vecZ",
+            // Velocity
+            "m_vecVelocity[0]",
+            "m_vecVelocity[1]",
+            // Eye angles
             "m_angEyeAngles[0]",
             "m_angEyeAngles[1]",
         ];
 
         const PROBE_VEC3: &[&str] = &[
-            "m_vecAbsOrigin",
-            "m_vecOrigin",
-            "m_pGameSceneNode.m_vecAbsOrigin",
-            "m_pGameSceneNode.m_vecOrigin",
             "m_angEyeAngles",
+            "m_vecVelocity",
         ];
 
         fn try_u32(entity: &Entity, path: &str) -> Option<u32> {
@@ -2205,28 +2069,11 @@ pub mod commands {
             fn handle_entity(&mut self, _ctx: &Context, entity: &Entity) -> ObserverResult {
                 let class = entity.class().name();
 
-                // Probe CCSPlayerPawn — want to see m_pGameSceneNode handle value
                 if class == "CCSPlayerPawn" && self.pawn_count < 5 {
                     self.pawn_count += 1;
                     self.lines.push(format!(
                         "=== CCSPlayerPawn[{}] entity_idx={} ===",
                         self.pawn_count,
-                        entity.index()
-                    ));
-                    let props = probe_entity(entity);
-                    if props.is_empty() {
-                        self.lines.push("  (no candidate properties found)".to_string());
-                    } else {
-                        self.lines.extend(props);
-                    }
-                }
-
-                // Probe CGameSceneNode — want to see m_cellX/Y/Z values
-                if class == "CGameSceneNode" && self.gsn_count < 5 {
-                    self.gsn_count += 1;
-                    self.lines.push(format!(
-                        "=== CGameSceneNode[{}] entity_idx={} ===",
-                        self.gsn_count,
                         entity.index()
                     ));
                     let props = probe_entity(entity);
@@ -2259,16 +2106,10 @@ pub mod commands {
             .map_err(|e| format!("Parse error: {e}"))?;
 
         let obs = collector.borrow();
-        let mut out = obs.lines.join("\n");
         if obs.pawn_count == 0 {
-            out = "No CCSPlayerPawn entities found in demo.".to_string();
+            return Ok("No CCSPlayerPawn entities found in demo.".to_string());
         }
-        if obs.gsn_count == 0 {
-            out.push_str("\n\n[PROBE] No CGameSceneNode entities found — the class name may differ.");
-        } else {
-            out.push_str(&format!("\n\n[PROBE] Found {} CGameSceneNode entities.", obs.gsn_count));
-        }
-        Ok(out)
+        Ok(obs.lines.join("\n"))
     }
 
     #[tauri::command]
