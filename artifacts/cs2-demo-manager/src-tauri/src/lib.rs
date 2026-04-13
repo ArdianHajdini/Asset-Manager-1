@@ -1772,20 +1772,65 @@ pub mod commands {
                 if class == "CCSPlayerPawn" {
                     let snap = self.pawn_snapshots.entry(idx).or_default();
 
-                    // CS2 PBDEMS2 stores positions via a cell-based coordinate system on the
-                    // CBodyComponentBaseAnimGraph sub-object (confirmed from demoparser source).
+                    // CS2 PBDEMS2 stores positions via a cell-based coordinate system.
                     // Formula: world_coord = cell * CELL_SIZE + vec_offset - MAX_COORD
                     //   CELL_SIZE = 512  (CELL_BITS = 9)
                     //   MAX_COORD = 16384 (world half-extent)
+                    //
+                    // We try three property-path formats in order (different source2-demo
+                    // versions and serialiser trees expose the same data under different names):
+                    //   1. m_pGameSceneNode.m_cellX  ← most common in CS2 PBDEMS2
+                    //   2. CBodyComponentBaseAnimGraph.m_cellX  ← older/alt naming
+                    //   3. m_cellX  ← flat namespace (some serialiser configurations)
                     const CELL_SIZE: f32 = 512.0;
                     const MAX_COORD: f32 = 16384.0;
 
-                    let cell_x = get_u32(entity, "CBodyComponentBaseAnimGraph.m_cellX");
-                    let vec_x  = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecX");
-                    let cell_y = get_u32(entity, "CBodyComponentBaseAnimGraph.m_cellY");
-                    let vec_y  = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecY");
-                    let cell_z = get_u32(entity, "CBodyComponentBaseAnimGraph.m_cellZ");
-                    let vec_z  = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecZ");
+                    // Helper: try a list of paths, return first non-zero u32
+                    let try_u32 = |paths: &[&str]| -> u32 {
+                        for &p in paths {
+                            let v = get_u32(entity, p);
+                            if v != 0 { return v; }
+                        }
+                        0u32
+                    };
+                    let try_f32 = |paths: &[&str]| -> f32 {
+                        for &p in paths {
+                            let v = get_f32(entity, p);
+                            if v != 0.0 { return v; }
+                        }
+                        0.0f32
+                    };
+
+                    let cell_x = try_u32(&[
+                        "m_pGameSceneNode.m_cellX",
+                        "CBodyComponentBaseAnimGraph.m_cellX",
+                        "m_cellX",
+                    ]);
+                    let cell_y = try_u32(&[
+                        "m_pGameSceneNode.m_cellY",
+                        "CBodyComponentBaseAnimGraph.m_cellY",
+                        "m_cellY",
+                    ]);
+                    let cell_z = try_u32(&[
+                        "m_pGameSceneNode.m_cellZ",
+                        "CBodyComponentBaseAnimGraph.m_cellZ",
+                        "m_cellZ",
+                    ]);
+                    let vec_x = try_f32(&[
+                        "m_pGameSceneNode.m_vecX",
+                        "CBodyComponentBaseAnimGraph.m_vecX",
+                        "m_vecX",
+                    ]);
+                    let vec_y = try_f32(&[
+                        "m_pGameSceneNode.m_vecY",
+                        "CBodyComponentBaseAnimGraph.m_vecY",
+                        "m_vecY",
+                    ]);
+                    let vec_z = try_f32(&[
+                        "m_pGameSceneNode.m_vecZ",
+                        "CBodyComponentBaseAnimGraph.m_vecZ",
+                        "m_vecZ",
+                    ]);
 
                     if self.dbg_pawn_seen < 3 {
                         eprintln!(
@@ -1811,9 +1856,17 @@ pub mod commands {
                         snap.eye_yaw   = get_f32(entity, "m_angEyeAngles[1]");
                     }
 
-                    // Velocity components (m_vecVelocity on body component)
-                    snap.vel_x = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecVX");
-                    snap.vel_y = get_f32(entity, "CBodyComponentBaseAnimGraph.m_vecVY");
+                    // Velocity components
+                    snap.vel_x = try_f32(&[
+                        "m_pGameSceneNode.m_vecVX",
+                        "CBodyComponentBaseAnimGraph.m_vecVX",
+                        "m_vecVX",
+                    ]);
+                    snap.vel_y = try_f32(&[
+                        "m_pGameSceneNode.m_vecVY",
+                        "CBodyComponentBaseAnimGraph.m_vecVY",
+                        "m_vecVY",
+                    ]);
                 }
 
                 Ok(())
@@ -1965,6 +2018,161 @@ pub mod commands {
         }
     }
 
+    // ── Property Probe ─────────────────────────────────────────────────────
+    // Diagnostic: tries many property-path formats on the first few
+    // CCSPlayerPawn entities and reports which ones return non-zero/non-empty
+    // values. Run once against a real demo to find the correct path.
+
+    mod s2_probe {
+        use source2_demo::prelude::*;
+
+        pub struct PropProbe {
+            pub pawn_count: u32,
+            pub lines: Vec<String>,
+        }
+
+        impl Default for PropProbe {
+            fn default() -> Self {
+                Self { pawn_count: 0, lines: Vec::new() }
+            }
+        }
+
+        // All candidate paths — grouped by expected type.
+        const PROBE_U32: &[&str] = &[
+            // Flat names
+            "m_cellX", "m_cellY", "m_cellZ",
+            // Via m_pGameSceneNode
+            "m_pGameSceneNode.m_cellX",
+            "m_pGameSceneNode.m_cellY",
+            "m_pGameSceneNode.m_cellZ",
+            // Via CBodyComponentBaseAnimGraph
+            "CBodyComponentBaseAnimGraph.m_cellX",
+            "CBodyComponentBaseAnimGraph.m_cellY",
+            "CBodyComponentBaseAnimGraph.m_cellZ",
+            // Controller/pawn handles on pawn entity
+            "m_hController",
+            "m_hPlayerPawn",
+            // Health (to verify u32 lookup works at all on pawn entity)
+            "m_iHealth",
+        ];
+
+        const PROBE_F32: &[&str] = &[
+            // Flat names
+            "m_vecX", "m_vecY", "m_vecZ",
+            // Via m_pGameSceneNode
+            "m_pGameSceneNode.m_vecX",
+            "m_pGameSceneNode.m_vecY",
+            "m_pGameSceneNode.m_vecZ",
+            // Via CBodyComponentBaseAnimGraph
+            "CBodyComponentBaseAnimGraph.m_vecX",
+            "CBodyComponentBaseAnimGraph.m_vecY",
+            "CBodyComponentBaseAnimGraph.m_vecZ",
+            // Eye angles (should be non-zero if player is alive)
+            "m_angEyeAngles[0]",
+            "m_angEyeAngles[1]",
+        ];
+
+        const PROBE_VEC3: &[&str] = &[
+            "m_vecAbsOrigin",
+            "m_vecOrigin",
+            "m_pGameSceneNode.m_vecAbsOrigin",
+            "m_pGameSceneNode.m_vecOrigin",
+            "m_angEyeAngles",
+        ];
+
+        fn try_u32(entity: &Entity, path: &str) -> Option<u32> {
+            entity.get_property_by_name(path).ok()
+                .and_then(|v| TryInto::<u32>::try_into(v).ok())
+        }
+        fn try_f32(entity: &Entity, path: &str) -> Option<f32> {
+            entity.get_property_by_name(path).ok()
+                .and_then(|v| TryInto::<f32>::try_into(v).ok())
+        }
+        fn try_vec3(entity: &Entity, path: &str) -> Option<[f32; 3]> {
+            entity.get_property_by_name(path).ok()
+                .and_then(|v| TryInto::<[f32; 3]>::try_into(v).ok())
+        }
+        fn exists(entity: &Entity, path: &str) -> bool {
+            entity.get_property_by_name(path).is_ok()
+        }
+
+        fn probe_entity(entity: &Entity) -> Vec<String> {
+            let mut found = Vec::new();
+            for &path in PROBE_U32 {
+                if let Some(n) = try_u32(entity, path) {
+                    found.push(format!("  [u32] {} = {}", path, n));
+                } else if exists(entity, path) {
+                    found.push(format!("  [u32/ERR] {} EXISTS but u32 conv failed", path));
+                }
+            }
+            for &path in PROBE_F32 {
+                if let Some(n) = try_f32(entity, path) {
+                    found.push(format!("  [f32] {} = {:.4}", path, n));
+                } else if exists(entity, path) {
+                    found.push(format!("  [f32/ERR] {} EXISTS but f32 conv failed", path));
+                }
+            }
+            for &path in PROBE_VEC3 {
+                if let Some(v) = try_vec3(entity, path) {
+                    found.push(format!("  [vec3] {} = [{:.2},{:.2},{:.2}]", path, v[0], v[1], v[2]));
+                } else if exists(entity, path) {
+                    found.push(format!("  [vec3/ERR] {} EXISTS but vec3 conv failed", path));
+                }
+            }
+            found
+        }
+
+        #[observer]
+        #[uses_entities]
+        impl PropProbe {
+            #[on_entity]
+            fn handle_entity(&mut self, _ctx: &Context, entity: &Entity) -> ObserverResult {
+                if self.pawn_count >= 5 { return Ok(()); }
+                if entity.class().name() != "CCSPlayerPawn" { return Ok(()); }
+
+                self.pawn_count += 1;
+                let header = format!(
+                    "=== CCSPlayerPawn[{}] entity_idx={} ===",
+                    self.pawn_count,
+                    entity.index()
+                );
+                self.lines.push(header);
+
+                let props = probe_entity(entity);
+                if props.is_empty() {
+                    self.lines.push("  (no candidate properties found at all)".to_string());
+                } else {
+                    self.lines.extend(props);
+                }
+
+                Ok(())
+            }
+        }
+    }
+
+    #[tauri::command]
+    pub async fn probe_pawn_properties(filepath: String) -> Result<String, String> {
+        use source2_demo::DemoRunner;
+
+        let file = std::fs::File::open(&filepath)
+            .map_err(|e| format!("Cannot open demo: {e}"))?;
+
+        let mut parser = source2_demo::Parser::from_reader(file)
+            .map_err(|e| format!("Parser init error: {e}"))?;
+
+        let collector = parser.register_observer::<s2_probe::PropProbe>();
+
+        parser
+            .run_to_end()
+            .map_err(|e| format!("Parse error: {e}"))?;
+
+        let obs = collector.borrow();
+        if obs.pawn_count == 0 {
+            return Ok("No CCSPlayerPawn entities found in demo.".to_string());
+        }
+        Ok(obs.lines.join("\n"))
+    }
+
     #[tauri::command]
     pub async fn parse_demo_deaths(
         filepath: String,
@@ -2024,6 +2232,7 @@ pub fn run() {
             commands::verify_license,
             commands::validate_license_stored,
             commands::parse_demo_deaths,
+            commands::probe_pawn_properties,
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten der Anwendung");

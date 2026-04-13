@@ -2,7 +2,7 @@ import { useState } from "react";
 import { X, Skull, Crosshair, Eye, Gauge, Footprints, Users, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TauriDeathEvent, TauriDemoPlayer } from "../services/tauriBridge";
-import { tauriParseDemoDeaths } from "../services/tauriBridge";
+import { tauriParseDemoDeaths, tauriProbePawnProperties } from "../services/tauriBridge";
 import { cn } from "@/lib/utils";
 
 interface StatisticsModalProps {
@@ -164,6 +164,8 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
   const [selectedPlayer, setSelectedPlayer] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [probeResult, setProbeResult] = useState<string | null>(null);
+  const [probeLoading, setProbeLoading] = useState(false);
 
   const activePlayers = players.filter(p => p.teamNum === 2 || p.teamNum === 3);
   const tPlayers = activePlayers.filter(p => p.teamNum === 2);
@@ -198,6 +200,19 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
     setDeaths(null);
     setSelectedPlayer(null);
     setError(null);
+  }
+
+  async function handleProbe() {
+    setProbeLoading(true);
+    setProbeResult(null);
+    try {
+      const result = await tauriProbePawnProperties(filepath);
+      setProbeResult(result);
+    } catch (err) {
+      setProbeResult(`ERROR: ${String(err)}`);
+    } finally {
+      setProbeLoading(false);
+    }
   }
 
   const showPlayerPicker = deaths === null && !loading;
@@ -305,7 +320,37 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
                 </div>
               </div>
             )}
+          {/* Probe button — diagnostic tool to find correct property paths */}
+          <div className="mt-4 pt-3 border-t border-white/5 flex flex-col gap-2">
+            <button
+              onClick={handleProbe}
+              disabled={probeLoading}
+              className="w-full text-[10px] font-mono text-white/20 hover:text-white/50 hover:bg-white/5 rounded-lg px-3 py-2 transition-all border border-white/6 flex items-center justify-center gap-2"
+            >
+              {probeLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+              {probeLoading ? "probing pawn entities…" : "[probe pawn properties]"}
+            </button>
+            {probeResult !== null && (
+              <div className="relative">
+                <pre className="text-[9px] font-mono text-white/50 bg-white/3 border border-white/6 rounded-lg p-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">
+                  {probeResult || "(no output)"}
+                </pre>
+                <button
+                  onClick={() => navigator.clipboard.writeText(probeResult).catch(() => prompt("Copy:", probeResult))}
+                  className="absolute top-2 right-2 text-[8px] font-mono text-white/30 hover:text-white/60 hover:bg-white/8 px-1.5 py-0.5 rounded border border-white/8 transition-all"
+                >
+                  copy
+                </button>
+                <button
+                  onClick={() => setProbeResult(null)}
+                  className="absolute top-2 right-10 text-[8px] font-mono text-white/30 hover:text-white/60 hover:bg-white/8 px-1.5 py-0.5 rounded border border-white/8 transition-all"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
           </div>
+        </div>
         )}
 
         {showDeaths && deaths.length === 0 && (

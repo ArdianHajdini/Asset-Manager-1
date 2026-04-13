@@ -258,6 +258,17 @@ export async function tauriParseDemoDeaths(
 }
 
 /**
+ * Probe the property namespace of CCSPlayerPawn entities in a demo.
+ * Tries ~25 different path formats and returns a report string showing
+ * which ones actually exist and what values they hold.
+ * Use this once to find the correct property paths for position data.
+ */
+export async function tauriProbePawnProperties(filepath: string): Promise<string> {
+  const invoke = await getInvoke();
+  return invoke<string>("probe_pawn_properties", { filepath });
+}
+
+/**
  * Convert a TauriDemoEntry to the app's Demo type (adds a placeholder id).
  * The actual id is assigned by the frontend storage layer.
  */
