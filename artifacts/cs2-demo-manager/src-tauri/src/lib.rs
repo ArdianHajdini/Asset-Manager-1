@@ -1713,6 +1713,7 @@ pub mod commands {
 
         #[observer]
         #[uses_entities]
+        #[uses_game_events]
         impl DeathObserver {
             #[on_entity]
             fn handle_entity(&mut self, _ctx: &Context, entity: &Entity) -> ObserverResult {
@@ -1764,18 +1765,27 @@ pub mod commands {
                         self.current_round += 1;
                     }
                     "player_death" => {
-                        let weapon = event
-                            .get_string("weapon")
+                        let weapon: String = event
+                            .get_value("weapon")
+                            .ok()
+                            .and_then(|v| TryInto::<String>::try_into(v).ok())
+                            .as_deref()
                             .map(weapon_name)
                             .unwrap_or_default();
-                        let headshot = event.get_bool("headshot").unwrap_or(false);
-                        let victim_name = event
-                            .get_string("player_name")
-                            .map(str::to_string)
+                        let headshot: bool = event
+                            .get_value("headshot")
+                            .ok()
+                            .and_then(|v| TryInto::<bool>::try_into(v).ok())
+                            .unwrap_or(false);
+                        let victim_name: String = event
+                            .get_value("player_name")
+                            .ok()
+                            .and_then(|v| TryInto::<String>::try_into(v).ok())
                             .unwrap_or_default();
-                        let killer_name = event
-                            .get_string("attacker_name")
-                            .map(str::to_string)
+                        let killer_name: String = event
+                            .get_value("attacker_name")
+                            .ok()
+                            .and_then(|v| TryInto::<String>::try_into(v).ok())
                             .unwrap_or_else(|| "Unknown".to_string());
 
                         // Look up victim steamid by name matching ctrl_name → steamid
