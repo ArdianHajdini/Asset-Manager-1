@@ -19,7 +19,7 @@ A paid CS2 demo manager for FACEIT players — packaged as a Tauri desktop app (
   - Drag-and-drop import + native file picker; .dem and .dem.gz/.dem.zst decompression
   - Voice mode filter: copy `tv_listen_voice_indices` command for T/CT team hearing
   - CS2 launch: Steam URI → direct cs2.exe → clipboard fallback
-  - Statistics button per demo: death list with round/time/killer/weapon, crosshair error angle, 2D SVG map view
+  - Statistics: per-death fight analysis with player picker (T/CT teams), crosshair error, FOV, speed, shot-before-stop, 2D SVG fight diagram, verdict
   - Gumroad license activation + 7-day offline grace period + startup online validation
   - Auto-detect Steam/CS2 path, FACEIT demo downloads (reqwest)
 - **Rust commands** (`src-tauri/src/lib.rs`):
@@ -32,7 +32,8 @@ A paid CS2 demo manager for FACEIT players — packaged as a Tauri desktop app (
   - `validate_license_stored(license_key, instance_id, provider)` — Gumroad re-validate
 - **Key license storage**: `fedcs2_license` in localStorage `{key, instanceId, validatedAt, provider:"gumroad"}`
 - **Key TypeScript services**: `licenseService.ts`, `tauriBridge.ts`, `demoService.ts`, `voiceService.ts`
-- **Key components**: `DemoCard.tsx` (voice mode + statistics button), `StatisticsModal.tsx` (death list + 2D map)
+- **Key components**: `DemoCard.tsx` (voice mode + statistics button), `StatisticsModal.tsx` (player picker + fight analysis cards)
+- **Rust parser note**: CS2 `player_death` uses `userid`/`attacker` as controller handles (mask `& 0x3FFF` for entity index), NOT `player_name`/`attacker_name`
 - **Build for Windows**: `pnpm tauri build --target x86_64-pc-windows-msvc` on Windows/CI
 
 ## Stack
