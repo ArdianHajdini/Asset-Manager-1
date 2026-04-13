@@ -1631,8 +1631,12 @@ pub mod commands {
             pub deaths: Vec<super::super::DemoDeathEvent>,
             /// controller entity_index → pawn entity_index (from m_hPlayerPawn)
             pub ctrl_to_pawn: HashMap<u32, u32>,
-            /// pawn entity_index → latest snapshot
+            /// pawn entity_index → latest snapshot (eye angles, velocity; no XYZ — those come from GSN)
             pub pawn_snapshots: HashMap<u32, PawnSnapshot>,
+            /// pawn entity_index → game-scene-node entity_index (from m_pGameSceneNode handle)
+            pub pawn_to_gsn: HashMap<u32, u32>,
+            /// game-scene-node entity_index → latest position snapshot (XYZ only)
+            pub gsn_snapshots: HashMap<u32, PawnSnapshot>,
             /// controller entity_index → player name
             pub ctrl_name: HashMap<u32, String>,
             /// controller entity_index → steamid string
@@ -1653,6 +1657,8 @@ pub mod commands {
                     deaths: Vec::new(),
                     ctrl_to_pawn: HashMap::new(),
                     pawn_snapshots: HashMap::new(),
+                    pawn_to_gsn: HashMap::new(),
+                    gsn_snapshots: HashMap::new(),
                     ctrl_name: HashMap::new(),
                     ctrl_steamid: HashMap::new(),
                     current_round: 0,
@@ -1867,6 +1873,50 @@ pub mod commands {
                         "CBodyComponentBaseAnimGraph.m_vecVY",
                         "m_vecVY",
                     ]);
+
+                    // Link pawn → game-scene-node via the handle property.
+                    // CGameSceneNode (a separate entity) holds the cell-based position.
+                    // Handle format in CS2 PBDEMS2: lower 14 bits = entity index.
+                    let gsn_handle = get_u32(entity, "m_pGameSceneNode");
+                    if gsn_handle > 0 {
+                        let gsn_idx = gsn_handle & 0x3FFF;
+                        if gsn_idx > 0 && gsn_idx < 4096 {
+                            self.pawn_to_gsn.insert(idx, gsn_idx);
+                        }
+                    }
+                }
+
+                // ── CGameSceneNode: track cell-based world position ─────────
+                // In CS2 PBDEMS2 format, player world-position is NOT stored on
+                // CCSPlayerPawn directly.  It lives on a separate CGameSceneNode
+                // entity (referenced by the pawn's m_pGameSceneNode handle).
+                // The cell formula: world = cell * 512 + vec_offset - 16384
+                if class == "CGameSceneNode" {
+                    const CELL_SIZE: f32 = 512.0;
+                    const MAX_COORD: f32 = 16384.0;
+
+                    let cell_x = get_u32(entity, "m_cellX");
+                    let cell_y = get_u32(entity, "m_cellY");
+                    let cell_z = get_u32(entity, "m_cellZ");
+                    let vec_x  = get_f32(entity, "m_vecX");
+                    let vec_y  = get_f32(entity, "m_vecY");
+                    let vec_z  = get_f32(entity, "m_vecZ");
+
+                    if cell_x > 0 || cell_y > 0 || cell_z > 0 {
+                        let snap = self.gsn_snapshots.entry(idx).or_default();
+                        snap.x = (cell_x as f32) * CELL_SIZE + vec_x - MAX_COORD;
+                        snap.y = (cell_y as f32) * CELL_SIZE + vec_y - MAX_COORD;
+                        snap.z = (cell_z as f32) * CELL_SIZE + vec_z - MAX_COORD;
+
+                        if self.dbg_pawn_seen < 3 {
+                            eprintln!(
+                                "[DBG gsn] entity_idx={} cell=({},{},{}) vec=({:.1},{:.1},{:.1}) → pos=({:.0},{:.0},{:.0})",
+                                idx, cell_x, cell_y, cell_z, vec_x, vec_y, vec_z,
+                                snap.x, snap.y, snap.z,
+                            );
+                            self.dbg_pawn_seen += 1;
+                        }
+                    }
                 }
 
                 Ok(())
@@ -1940,9 +1990,27 @@ pub mod commands {
                             return Ok(());
                         }
 
+                        // Build a snapshot for a given controller:
+                        //   - Eye angles + velocity come from the CCSPlayerPawn snapshot
+                        //   - XYZ world position comes from the linked CGameSceneNode snapshot
                         let get_snap = |ctrl: u32| -> Option<PawnSnapshot> {
                             let pawn_idx = self.ctrl_to_pawn.get(&ctrl).copied()?;
-                            self.pawn_snapshots.get(&pawn_idx).cloned()
+                            let mut snap = self.pawn_snapshots
+                                .get(&pawn_idx)
+                                .cloned()
+                                .unwrap_or_default();
+
+                            // Prefer CGameSceneNode position (the cell coords live there)
+                            if let Some(&gsn_idx) = self.pawn_to_gsn.get(&pawn_idx) {
+                                if let Some(gsn) = self.gsn_snapshots.get(&gsn_idx) {
+                                    if gsn.x != 0.0 || gsn.y != 0.0 || gsn.z != 0.0 {
+                                        snap.x = gsn.x;
+                                        snap.y = gsn.y;
+                                        snap.z = gsn.z;
+                                    }
+                                }
+                            }
+                            Some(snap)
                         };
 
                         let victim_snap = get_snap(victim_ctrl).unwrap_or_default();
@@ -1977,13 +2045,18 @@ pub mod commands {
                             .get(&killer_ctrl)
                             .map(|p| p.to_string())
                             .unwrap_or_else(|| "NONE".to_string());
+                        let victim_pawn_idx_opt = self.ctrl_to_pawn.get(&victim_ctrl).copied();
+                        let victim_gsn_str = victim_pawn_idx_opt
+                            .and_then(|pi| self.pawn_to_gsn.get(&pi).copied())
+                            .map(|gi| gi.to_string())
+                            .unwrap_or_else(|| "NONE".to_string());
                         let debug_info = format!(
-                            "uid_raw={} att_raw={} | vc={} vp={} kc={} kp={} | ctrls:{} pawns:{} | vpos=[{:.0},{:.0},{:.0}] kpos=[{:.0},{:.0},{:.0}] | posData={} | victim={:?} killer={:?} sid={:?}",
+                            "uid_raw={} att_raw={} | vc={} vp={} kc={} kp={} | gsn:{} gsns:{} | vpos=[{:.0},{:.0},{:.0}] kpos=[{:.0},{:.0},{:.0}] | posData={} | victim={:?} killer={:?} sid={:?}",
                             raw_userid, raw_attacker,
                             victim_ctrl, victim_pawn_str,
                             killer_ctrl, killer_pawn_str,
-                            self.ctrl_to_pawn.len(),
-                            self.pawn_snapshots.len(),
+                            victim_gsn_str,
+                            self.gsn_snapshots.len(),
                             victim_snap.x, victim_snap.y, victim_snap.z,
                             killer_snap.x, killer_snap.y, killer_snap.z,
                             has_pos_data,
@@ -2028,12 +2101,13 @@ pub mod commands {
 
         pub struct PropProbe {
             pub pawn_count: u32,
+            pub gsn_count: u32,
             pub lines: Vec<String>,
         }
 
         impl Default for PropProbe {
             fn default() -> Self {
-                Self { pawn_count: 0, lines: Vec::new() }
+                Self { pawn_count: 0, gsn_count: 0, lines: Vec::new() }
             }
         }
 
@@ -2049,6 +2123,8 @@ pub mod commands {
             "CBodyComponentBaseAnimGraph.m_cellX",
             "CBodyComponentBaseAnimGraph.m_cellY",
             "CBodyComponentBaseAnimGraph.m_cellZ",
+            // Game-scene-node handle on the pawn (CRITICAL: tells us the GSN entity index)
+            "m_pGameSceneNode",
             // Controller/pawn handles on pawn entity
             "m_hController",
             "m_hPlayerPawn",
@@ -2127,22 +2203,38 @@ pub mod commands {
         impl PropProbe {
             #[on_entity]
             fn handle_entity(&mut self, _ctx: &Context, entity: &Entity) -> ObserverResult {
-                if self.pawn_count >= 5 { return Ok(()); }
-                if entity.class().name() != "CCSPlayerPawn" { return Ok(()); }
+                let class = entity.class().name();
 
-                self.pawn_count += 1;
-                let header = format!(
-                    "=== CCSPlayerPawn[{}] entity_idx={} ===",
-                    self.pawn_count,
-                    entity.index()
-                );
-                self.lines.push(header);
+                // Probe CCSPlayerPawn — want to see m_pGameSceneNode handle value
+                if class == "CCSPlayerPawn" && self.pawn_count < 5 {
+                    self.pawn_count += 1;
+                    self.lines.push(format!(
+                        "=== CCSPlayerPawn[{}] entity_idx={} ===",
+                        self.pawn_count,
+                        entity.index()
+                    ));
+                    let props = probe_entity(entity);
+                    if props.is_empty() {
+                        self.lines.push("  (no candidate properties found)".to_string());
+                    } else {
+                        self.lines.extend(props);
+                    }
+                }
 
-                let props = probe_entity(entity);
-                if props.is_empty() {
-                    self.lines.push("  (no candidate properties found at all)".to_string());
-                } else {
-                    self.lines.extend(props);
+                // Probe CGameSceneNode — want to see m_cellX/Y/Z values
+                if class == "CGameSceneNode" && self.gsn_count < 5 {
+                    self.gsn_count += 1;
+                    self.lines.push(format!(
+                        "=== CGameSceneNode[{}] entity_idx={} ===",
+                        self.gsn_count,
+                        entity.index()
+                    ));
+                    let props = probe_entity(entity);
+                    if props.is_empty() {
+                        self.lines.push("  (no candidate properties found)".to_string());
+                    } else {
+                        self.lines.extend(props);
+                    }
                 }
 
                 Ok(())
@@ -2167,10 +2259,16 @@ pub mod commands {
             .map_err(|e| format!("Parse error: {e}"))?;
 
         let obs = collector.borrow();
+        let mut out = obs.lines.join("\n");
         if obs.pawn_count == 0 {
-            return Ok("No CCSPlayerPawn entities found in demo.".to_string());
+            out = "No CCSPlayerPawn entities found in demo.".to_string();
         }
-        Ok(obs.lines.join("\n"))
+        if obs.gsn_count == 0 {
+            out.push_str("\n\n[PROBE] No CGameSceneNode entities found — the class name may differ.");
+        } else {
+            out.push_str(&format!("\n\n[PROBE] Found {} CGameSceneNode entities.", obs.gsn_count));
+        }
+        Ok(out)
     }
 
     #[tauri::command]
