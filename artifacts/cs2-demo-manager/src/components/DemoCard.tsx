@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import {
   FolderOpen, Pencil, Trash2, Check, X, Copy, Loader2,
-  Volume2, Info, Users, ChevronDown, ChevronUp,
+  Volume2, Info, Users, ChevronDown, ChevronUp, BarChart2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Demo } from "../types/demo";
@@ -21,7 +21,14 @@ import {
   playersMissingEntityIds,
   type DemoRosters,
 } from "../services/voiceService";
-import { isTauri, tauriParseDemoPlayers, type TauriDemoPlayer } from "../services/tauriBridge";
+import {
+  isTauri,
+  tauriParseDemoPlayers,
+  tauriParseDemoDeaths,
+  type TauriDemoPlayer,
+  type TauriDeathEvent,
+} from "../services/tauriBridge";
+import { StatisticsModal } from "./StatisticsModal";
 import { cn } from "@/lib/utils";
 
 interface DemoCardProps {
@@ -48,6 +55,11 @@ export function DemoCard({ demo }: DemoCardProps) {
   const [parsing, setParsing] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [showPlayers, setShowPlayers] = useState(false);
+
+  const [showStats, setShowStats] = useState(false);
+  const [statsDeaths, setStatsDeaths] = useState<TauriDeathEvent[] | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
   const playdemoArg = buildPlaydemoArg(demo.filename);
 
   const voiceModeLabel = (mode: VoiceMode): string => {
@@ -133,6 +145,27 @@ export function DemoCard({ demo }: DemoCardProps) {
     }
   }
 
+  async function handleShowStats() {
+    if (!isTauri() || !demo.filepath) return;
+    if (statsDeaths !== null) {
+      setShowStats(true);
+      return;
+    }
+    setStatsLoading(true);
+    setStatsError(null);
+    try {
+      const steamId = settings.steamId ?? "";
+      const deaths = await tauriParseDemoDeaths(demo.filepath, steamId);
+      setStatsDeaths(deaths);
+      setShowStats(true);
+    } catch (err) {
+      setStatsError(String(err));
+      setStatus({ type: "error", message: t("demo.statsError") });
+    } finally {
+      setStatsLoading(false);
+    }
+  }
+
   function teamLabel(teamNum: number): string {
     if (teamNum === 2) return "T";
     if (teamNum === 3) return "CT";
@@ -145,6 +178,7 @@ export function DemoCard({ demo }: DemoCardProps) {
   }
 
   return (
+    <>
     <div className="rounded-xl border border-white/8 bg-white/3 hover:bg-white/5 transition-all duration-200 overflow-hidden">
       <div className="p-4">
 
@@ -385,6 +419,20 @@ export function DemoCard({ demo }: DemoCardProps) {
             {cmdCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
             {cmdCopied ? t("demo.copied") : t("demo.copyCommand")}
           </button>
+
+          {isTauri() && demo.filepath && (
+            <button
+              onClick={handleShowStats}
+              disabled={statsLoading}
+              title={t("demo.statistics")}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-white/10 bg-white/4 text-white/50 hover:text-white/80 hover:bg-white/8 hover:border-white/20 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {statsLoading
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <BarChart2 className="w-3.5 h-3.5" />}
+              {statsLoading ? t("demo.statsLoading") : t("demo.statistics")}
+            </button>
+          )}
         </div>
 
         {/* Copied command panel */}
@@ -437,5 +485,15 @@ export function DemoCard({ demo }: DemoCardProps) {
         )}
       </div>
     </div>
+
+    {/* Statistics Modal */}
+    {showStats && statsDeaths !== null && (
+      <StatisticsModal
+        demoName={demo.displayName}
+        deaths={statsDeaths}
+        onClose={() => setShowStats(false)}
+      />
+    )}
+  </>
   );
 }

@@ -1,0 +1,133 @@
+We are restructuring the project and adding a new core feature: Death Analysis / Statistics.
+
+--------------------------------------------------
+STEP 1: REMOVE LEMON SQUEEZY COMPLETELY But Keep Gumroad
+--------------------------------------------------
+
+Remove ALL Lemon Squeezy related logic from the project:
+
+--------------------------------------------------
+STEP 2: CREATE "stable" BRANCH FROM LAST WORKING STATE
+--------------------------------------------------
+
+Take the current latest working version (last push) and:
+
+- create a new branch called: "stable"
+- copy the current state into this branch (no changes)
+
+This branch should represent the last stable version of the app.
+
+--------------------------------------------------
+STEP 3: CONTINUE DEVELOPMENT IN "main"
+--------------------------------------------------
+
+All new features must now be implemented in the "main" branch only.
+
+Do NOT modify the "stable" branch anymore.
+
+--------------------------------------------------
+STEP 4: ADD "STATISTICS" BUTTON
+--------------------------------------------------
+
+In the main UI:
+
+- add a button: "Statistics" to every demo
+
+When clicked:
+- open a modal / popup window
+
+--------------------------------------------------
+STEP 5: DEATH LIST (LOCAL PLAYER ONLY)
+--------------------------------------------------
+
+Inside the popup:
+
+- list all deaths of the local player
+
+For each death show:
+- round number
+- time
+- killer name
+- weapon
+
+Each entry must be clickable.
+
+--------------------------------------------------
+STEP 6: DEATH ANALYSIS VIEW (CORE FEATURE)
+--------------------------------------------------
+
+When clicking a death, show a detailed analysis panel.
+
+Compute and display:
+
+1. crosshair_error_deg
+- calculate the angle between player's view direction and enemy position
+
+2. was_enemy_in_fov
+- if angle < 45 degrees → true
+- else → false
+
+3. speed_at_first_shot
+- player velocity at first weapon_fire event
+
+4. shot_before_stop
+- true if speed_at_first_shot > threshold (e.g. 10)
+
+5. time_to_first_shot_ms
+- time between first enemy contact and first shot
+
+6. time_to_first_damage_ms
+- time between first enemy contact and first damage event
+
+7. positions:
+- player position
+- enemy position
+
+--------------------------------------------------
+STEP 7: SIMPLE 2D MAP VIEW
+--------------------------------------------------
+
+Add a simple top-down 2D visualization:
+
+- draw player position as a circle
+- draw enemy position as a circle
+- optionally draw a line between them
+
+No real map rendering required.
+Just relative positioning.
+
+--------------------------------------------------
+STEP 8: DATA REQUIREMENTS
+--------------------------------------------------
+
+Ensure the demo parser provides:
+
+- player positions per tick
+- view angles
+- velocity
+- weapon_fire events
+- player_hurt events
+- player_death events
+
+Extend parser if necessary.
+
+--------------------------------------------------
+STEP 9: UX RULES
+--------------------------------------------------
+
+Keep everything SIMPLE:
+
+- no charts
+- no complex UI
+- focus on clarity
+- fast loading
+
+--------------------------------------------------
+STEP 10: OUTPUT AFTER IMPLEMENTATION
+--------------------------------------------------
+
+After finishing:
+
+- list all changed files
+- explain how crosshair_error is calculated
+- explain how enemy_in_fov is determined

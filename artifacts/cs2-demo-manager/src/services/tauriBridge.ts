@@ -218,13 +218,42 @@ export async function tauriValidateLicense(
   return invoke<TauriLicenseValidateResult>("validate_license_stored", { licenseKey, instanceId, provider });
 }
 
-/** Deactivate a LemonSqueezy license instance (Gumroad: no-op, cleared locally). */
-export async function tauriDeactivateLicense(
-  licenseKey: string,
-  instanceId: string
-): Promise<boolean> {
+// ─────────────────────────────────────────
+//  Death / Statistics Analysis
+// ─────────────────────────────────────────
+
+/** A death event for the local player, returned by parse_demo_deaths. */
+export interface TauriDeathEvent {
+  round: number;
+  tick: number;
+  timeSeconds: number;
+  victimName: string;
+  victimSteamId: string;
+  killerName: string;
+  weapon: string;
+  headshot: boolean;
+  victimPos: [number, number, number];
+  killerPos: [number, number, number];
+  victimEyeYaw: number;
+  victimEyePitch: number;
+  victimSpeed: number;
+  crosshairErrorDeg: number;
+  wasEnemyInFov: boolean;
+  shotBeforeStop: boolean;
+  hasPosData: boolean;
+}
+
+/**
+ * Parse death events for the local player from a CS2 demo.
+ * steamId: Steam ID64 string of the local player.
+ * Returns a list of death events sorted by tick.
+ */
+export async function tauriParseDemoDeaths(
+  filepath: string,
+  steamId: string,
+): Promise<TauriDeathEvent[]> {
   const invoke = await getInvoke();
-  return invoke<boolean>("deactivate_license_stored", { licenseKey, instanceId });
+  return invoke<TauriDeathEvent[]>("parse_demo_deaths", { filepath, steamId });
 }
 
 /**

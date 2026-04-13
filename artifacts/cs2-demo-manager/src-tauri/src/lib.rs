@@ -38,6 +38,48 @@ pub struct LicenseValidateResult {
     pub offline: bool,
 }
 
+/// A single death event for the local player, returned by parse_demo_deaths.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DemoDeathEvent {
+    pub round: u32,
+    pub tick: u32,
+    #[serde(rename = "timeSeconds")]
+    pub time_seconds: f32,
+    #[serde(rename = "victimName")]
+    pub victim_name: String,
+    #[serde(rename = "victimSteamId")]
+    pub victim_steam_id: String,
+    #[serde(rename = "killerName")]
+    pub killer_name: String,
+    pub weapon: String,
+    pub headshot: bool,
+    /// [x, y, z] of victim at death tick
+    #[serde(rename = "victimPos")]
+    pub victim_pos: [f32; 3],
+    /// [x, y, z] of killer at death tick
+    #[serde(rename = "killerPos")]
+    pub killer_pos: [f32; 3],
+    #[serde(rename = "victimEyeYaw")]
+    pub victim_eye_yaw: f32,
+    #[serde(rename = "victimEyePitch")]
+    pub victim_eye_pitch: f32,
+    /// Horizontal speed of victim at death (units/s)
+    #[serde(rename = "victimSpeed")]
+    pub victim_speed: f32,
+    /// Angle in degrees between victim's view direction and killer's position
+    #[serde(rename = "crosshairErrorDeg")]
+    pub crosshair_error_deg: f32,
+    /// True if crosshairErrorDeg < 45
+    #[serde(rename = "wasEnemyInFov")]
+    pub was_enemy_in_fov: bool,
+    /// True if victim was moving (speed > 10) at death
+    #[serde(rename = "shotBeforeStop")]
+    pub shot_before_stop: bool,
+    /// True if position data was successfully extracted from entities
+    #[serde(rename = "hasPosData")]
+    pub has_pos_data: bool,
+}
+
 /// A player entry extracted from a CS2 demo file.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DemoPlayer {
@@ -1481,44 +1523,10 @@ pub mod commands {
         }
     }
 
-    // ── License verification (reqwest — bypasses WebView CORS) ──────────────
+    // ── License verification — Gumroad only (reqwest bypasses CORS) ─────────
 
-    const LS_API_BASE: &str = "https://api.lemonsqueezy.com/v1/licenses";
     const GR_VERIFY_URL: &str = "https://api.gumroad.com/v2/licenses/verify";
     const GR_PRODUCT_ID: &str = "2yW8xYHXZ3Zp4EswsRVqqA==";
-
-    async fn ls_activate_req(key: &str) -> (bool, String, String) {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(42);
-        let instance_name = format!("FEDCS2-{:08X}", ts);
-        let client = reqwest::Client::new();
-        match client
-            .post(format!("{}/activate", LS_API_BASE))
-            .header("Accept", "application/json")
-            .form(&[("license_key", key), ("instance_name", instance_name.as_str())])
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let json: serde_json::Value =
-                    resp.json().await.unwrap_or(serde_json::Value::Null);
-                let activated = json["activated"].as_bool().unwrap_or(false);
-                let iid = json["instance"]["id"]
-                    .as_str()
-                    .map(|s| s.to_string())
-                    .or_else(|| json["instance"]["id"].as_u64().map(|n| n.to_string()))
-                    .unwrap_or_default();
-                if activated && !iid.is_empty() {
-                    (true, iid, String::new())
-                } else {
-                    (false, String::new(), "invalid".to_string())
-                }
-            }
-            Err(_) => (false, String::new(), "network".to_string()),
-        }
-    }
 
     async fn gr_verify_req(key: &str, increment: bool) -> (bool, String) {
         let client = reqwest::Client::new();
@@ -1558,95 +1566,32 @@ pub mod commands {
     }
 
     #[tauri::command]
-    pub async fn verify_license(license_key: String, provider: String) -> super::LicenseVerifyResult {
-        if provider == "lemonsqueezy" {
-            let (ok, iid, err) = ls_activate_req(&license_key).await;
-            return super::LicenseVerifyResult {
-                success: ok,
-                provider: if ok { "lemonsqueezy".to_string() } else { String::new() },
-                instance_id: iid,
-                error: err,
-            };
-        }
-        if provider == "gumroad" {
-            let (ok, err) = gr_verify_req(&license_key, true).await;
-            return super::LicenseVerifyResult {
-                success: ok,
-                provider: if ok { "gumroad".to_string() } else { String::new() },
-                instance_id: String::new(),
-                error: err,
-            };
-        }
-        // Try both in parallel (legacy / fallback)
-        let (ls, gr) = tokio::join!(
-            ls_activate_req(&license_key),
-            gr_verify_req(&license_key, true),
-        );
-        let (ls_ok, ls_iid, ls_err) = ls;
-        let (gr_ok, gr_err) = gr;
-        if ls_ok {
-            return super::LicenseVerifyResult {
-                success: true,
-                provider: "lemonsqueezy".to_string(),
-                instance_id: ls_iid,
-                error: String::new(),
-            };
-        }
-        if gr_ok {
-            return super::LicenseVerifyResult {
-                success: true,
-                provider: "gumroad".to_string(),
-                instance_id: String::new(),
-                error: String::new(),
-            };
-        }
+    pub async fn verify_license(license_key: String, _provider: String) -> super::LicenseVerifyResult {
+        let (ok, err) = gr_verify_req(&license_key, true).await;
         super::LicenseVerifyResult {
-            success: false,
-            provider: String::new(),
+            success: ok,
+            provider: if ok { "gumroad".to_string() } else { String::new() },
             instance_id: String::new(),
-            error: if ls_err == "network" && gr_err == "network" {
-                "network".to_string()
-            } else {
-                "invalid".to_string()
-            },
+            error: err,
         }
     }
 
     #[tauri::command]
     pub async fn validate_license_stored(
         license_key: String,
-        instance_id: String,
-        provider: String,
+        _instance_id: String,
+        _provider: String,
     ) -> super::LicenseValidateResult {
-        if provider == "gumroad" {
-            let client = reqwest::Client::new();
-            let params = vec![("product_id", GR_PRODUCT_ID), ("license_key", license_key.as_str())];
-            return match client
-                .post(GR_VERIFY_URL)
-                .header("Accept", "application/json")
-                .form(&params)
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    let json: serde_json::Value =
-                        resp.json().await.unwrap_or(serde_json::Value::Null);
-                    super::LicenseValidateResult {
-                        valid: json["success"].as_bool().unwrap_or(false),
-                        offline: false,
-                    }
-                }
-                Err(_) => super::LicenseValidateResult { valid: false, offline: true },
-            };
-        }
         let client = reqwest::Client::new();
+        let params = vec![
+            ("product_id", GR_PRODUCT_ID),
+            ("license_key", license_key.as_str()),
+            ("increment_uses_count", "false"),
+        ];
         match client
-            .post(format!("{}/validate", LS_API_BASE))
+            .post(GR_VERIFY_URL)
             .header("Accept", "application/json")
-            .form(&[
-                ("license_key", license_key.as_str()),
-                ("instance_id", instance_id.as_str()),
-            ])
+            .form(&params)
             .send()
             .await
         {
@@ -1654,7 +1599,7 @@ pub mod commands {
                 let json: serde_json::Value =
                     resp.json().await.unwrap_or(serde_json::Value::Null);
                 super::LicenseValidateResult {
-                    valid: json["valid"].as_bool().unwrap_or(false),
+                    valid: json["success"].as_bool().unwrap_or(false),
                     offline: false,
                 }
             }
@@ -1662,29 +1607,279 @@ pub mod commands {
         }
     }
 
-    #[tauri::command]
-    pub async fn deactivate_license_stored(
-        license_key: String,
-        instance_id: String,
-    ) -> bool {
-        let client = reqwest::Client::new();
-        match client
-            .post(format!("{}/deactivate", LS_API_BASE))
-            .header("Accept", "application/json")
-            .form(&[
-                ("license_key", license_key.as_str()),
-                ("instance_id", instance_id.as_str()),
-            ])
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let json: serde_json::Value =
-                    resp.json().await.unwrap_or(serde_json::Value::Null);
-                json["deactivated"].as_bool().unwrap_or(false)
-            }
-            Err(_) => false,
+    // ── Death / Statistics Analysis ────────────────────────────────────────
+
+    mod s2_deaths {
+        use source2_demo::prelude::*;
+        use std::collections::HashMap;
+
+        #[derive(Clone, Default)]
+        pub struct PawnSnapshot {
+            pub x: f32,
+            pub y: f32,
+            pub z: f32,
+            pub eye_yaw: f32,
+            pub eye_pitch: f32,
+            pub vel_x: f32,
+            pub vel_y: f32,
         }
+
+        pub struct DeathObserver {
+            pub deaths: Vec<super::super::DemoDeathEvent>,
+            /// controller entity_index → pawn entity_index (from m_hPawn)
+            pub ctrl_to_pawn: HashMap<u32, u32>,
+            /// pawn entity_index → latest snapshot
+            pub pawn_snapshots: HashMap<u32, PawnSnapshot>,
+            /// controller entity_index → player name
+            pub ctrl_name: HashMap<u32, String>,
+            /// controller entity_index → steamid string
+            pub ctrl_steamid: HashMap<u32, String>,
+            pub current_round: u32,
+            pub target_steamid: String,
+        }
+
+        impl Default for DeathObserver {
+            fn default() -> Self {
+                DeathObserver {
+                    deaths: Vec::new(),
+                    ctrl_to_pawn: HashMap::new(),
+                    pawn_snapshots: HashMap::new(),
+                    ctrl_name: HashMap::new(),
+                    ctrl_steamid: HashMap::new(),
+                    current_round: 0,
+                    target_steamid: String::new(),
+                }
+            }
+        }
+
+        fn get_f32(entity: &Entity, name: &str) -> f32 {
+            entity
+                .get_property_by_name(name)
+                .ok()
+                .and_then(|v| v.try_into().ok())
+                .unwrap_or(0.0_f32)
+        }
+
+        fn get_u64(entity: &Entity, name: &str) -> u64 {
+            entity
+                .get_property_by_name(name)
+                .ok()
+                .and_then(|v| v.try_into().ok())
+                .unwrap_or(0_u64)
+        }
+
+        fn get_u32(entity: &Entity, name: &str) -> u32 {
+            entity
+                .get_property_by_name(name)
+                .ok()
+                .and_then(|v| v.try_into().ok())
+                .unwrap_or(0_u32)
+        }
+
+        fn get_str(entity: &Entity, name: &str) -> String {
+            entity
+                .get_property_by_name(name)
+                .ok()
+                .and_then(|v| v.try_into().ok())
+                .unwrap_or_default()
+        }
+
+        fn crosshair_error(victim: &PawnSnapshot, killer: &PawnSnapshot) -> (f32, bool) {
+            use std::f32::consts::PI;
+            let dx = killer.x - victim.x;
+            let dy = killer.y - victim.y;
+            let dz = killer.z - victim.z;
+            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+            if dist < 1.0 {
+                return (0.0, true);
+            }
+            let ex = dx / dist;
+            let ey = dy / dist;
+            let ez = dz / dist;
+            // CS2 convention: yaw = degrees around Z, pitch = tilt
+            let yaw = victim.eye_yaw * PI / 180.0;
+            let pitch = victim.eye_pitch * PI / 180.0;
+            let vx = pitch.cos() * yaw.cos();
+            let vy = pitch.cos() * yaw.sin();
+            let vz = -(pitch.sin());
+            let dot = (vx * ex + vy * ey + vz * ez).clamp(-1.0, 1.0);
+            let deg = dot.acos() * 180.0 / PI;
+            (deg, deg < 45.0)
+        }
+
+        fn weapon_name(raw: &str) -> String {
+            raw.trim_start_matches("weapon_").to_string()
+        }
+
+        #[observer]
+        #[uses_entities]
+        impl DeathObserver {
+            #[on_entity]
+            fn handle_entity(&mut self, _ctx: &Context, entity: &Entity) -> ObserverResult {
+                let class = entity.class().name();
+                let idx = entity.index();
+
+                if class == "CCSPlayerController" {
+                    let name = get_str(entity, "m_iszPlayerName");
+                    let steamid = get_u64(entity, "m_steamID");
+                    // m_hPawn handle: lower 14 bits = entity index in Source2
+                    let pawn_handle = get_u32(entity, "m_hPawn");
+                    let pawn_idx = pawn_handle & 0x3FFF;
+
+                    if !name.is_empty() {
+                        self.ctrl_name.insert(idx, name);
+                    }
+                    if steamid > 76_561_197_960_265_728 {
+                        self.ctrl_steamid.insert(idx, steamid.to_string());
+                    }
+                    if pawn_idx > 0 && pawn_idx < 2048 {
+                        self.ctrl_to_pawn.insert(idx, pawn_idx);
+                    }
+                }
+
+                if class == "CCSPlayerPawn" {
+                    let snap = self.pawn_snapshots.entry(idx).or_default();
+                    // Try primary property path, then fallback
+                    snap.x = get_f32(entity, "m_vecAbsOrigin.x");
+                    snap.y = get_f32(entity, "m_vecAbsOrigin.y");
+                    snap.z = get_f32(entity, "m_vecAbsOrigin.z");
+                    if snap.x == 0.0 && snap.y == 0.0 {
+                        snap.x = get_f32(entity, "CBodyComponentPoint.m_vecOrigin.x");
+                        snap.y = get_f32(entity, "CBodyComponentPoint.m_vecOrigin.y");
+                        snap.z = get_f32(entity, "CBodyComponentPoint.m_vecOrigin.z");
+                    }
+                    snap.eye_yaw = get_f32(entity, "m_angEyeAngles[1]");
+                    snap.eye_pitch = get_f32(entity, "m_angEyeAngles[0]");
+                    snap.vel_x = get_f32(entity, "m_vecAbsVelocity.x");
+                    snap.vel_y = get_f32(entity, "m_vecAbsVelocity.y");
+                }
+
+                Ok(())
+            }
+
+            #[on_game_event]
+            fn on_game_event(&mut self, ctx: &Context, event: &GameEvent) -> ObserverResult {
+                match event.name() {
+                    "round_start" => {
+                        self.current_round += 1;
+                    }
+                    "player_death" => {
+                        let weapon = event
+                            .get_string("weapon")
+                            .map(weapon_name)
+                            .unwrap_or_default();
+                        let headshot = event.get_bool("headshot").unwrap_or(false);
+                        let victim_name = event
+                            .get_string("player_name")
+                            .map(str::to_string)
+                            .unwrap_or_default();
+                        let killer_name = event
+                            .get_string("attacker_name")
+                            .map(str::to_string)
+                            .unwrap_or_else(|| "Unknown".to_string());
+
+                        // Look up victim steamid by name matching ctrl_name → steamid
+                        let victim_steamid: String = self
+                            .ctrl_name
+                            .iter()
+                            .find(|(_, n)| n.as_str() == victim_name.as_str())
+                            .and_then(|(ctrl_idx, _)| self.ctrl_steamid.get(ctrl_idx))
+                            .cloned()
+                            .unwrap_or_default();
+
+                        // Filter: only record deaths of target player
+                        if !self.target_steamid.is_empty()
+                            && victim_steamid != self.target_steamid
+                        {
+                            return Ok(());
+                        }
+                        // If no target specified, record all (shouldn't happen in practice)
+
+                        // Get positions via name → ctrl → pawn chain
+                        let get_snap = |name: &str| -> Option<PawnSnapshot> {
+                            let ctrl_idx = self
+                                .ctrl_name
+                                .iter()
+                                .find(|(_, n)| n.as_str() == name)
+                                .map(|(k, _)| *k)?;
+                            let pawn_idx = self.ctrl_to_pawn.get(&ctrl_idx).copied()?;
+                            self.pawn_snapshots.get(&pawn_idx).cloned()
+                        };
+
+                        let victim_snap = get_snap(&victim_name).unwrap_or_default();
+                        let killer_snap = get_snap(&killer_name).unwrap_or_default();
+
+                        let has_pos_data =
+                            (victim_snap.x != 0.0 || victim_snap.y != 0.0)
+                                && (killer_snap.x != 0.0 || killer_snap.y != 0.0);
+
+                        let (crosshair_error_deg, was_enemy_in_fov) =
+                            if has_pos_data {
+                                crosshair_error(&victim_snap, &killer_snap)
+                            } else {
+                                (0.0, false)
+                            };
+
+                        let speed = (victim_snap.vel_x.powi(2) + victim_snap.vel_y.powi(2)).sqrt();
+                        let tick = ctx.tick() as u32;
+                        // CS2 demos run at 64 ticks per second
+                        let time_seconds = tick as f32 / 64.0;
+
+                        self.deaths.push(super::super::DemoDeathEvent {
+                            round: self.current_round,
+                            tick,
+                            time_seconds,
+                            victim_name,
+                            victim_steam_id: victim_steamid,
+                            killer_name,
+                            weapon,
+                            headshot,
+                            victim_pos: [victim_snap.x, victim_snap.y, victim_snap.z],
+                            killer_pos: [killer_snap.x, killer_snap.y, killer_snap.z],
+                            victim_eye_yaw: victim_snap.eye_yaw,
+                            victim_eye_pitch: victim_snap.eye_pitch,
+                            victim_speed: speed,
+                            crosshair_error_deg,
+                            was_enemy_in_fov,
+                            shot_before_stop: speed > 10.0,
+                            has_pos_data,
+                        });
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }
+        }
+    }
+
+    #[tauri::command]
+    pub async fn parse_demo_deaths(
+        filepath: String,
+        steam_id: String,
+    ) -> Result<Vec<super::DemoDeathEvent>, String> {
+        use source2_demo::DemoRunner;
+
+        let file = std::fs::File::open(&filepath)
+            .map_err(|e| format!("Cannot open demo file: {e}"))?;
+
+        let mut parser = source2_demo::Parser::from_reader(file)
+            .map_err(|e| format!("Parser init error: {e}"))?;
+
+        let collector = parser.register_observer::<s2_deaths::DeathObserver>();
+        collector.borrow_mut().target_steamid = steam_id;
+
+        parser
+            .run_to_end()
+            .map_err(|e| format!("Parse error: {e}"))?;
+
+        let obs = collector.borrow();
+        eprintln!(
+            "[CS2DM] parse_demo_deaths: {} deaths found in {}",
+            obs.deaths.len(),
+            filepath
+        );
+
+        Ok(obs.deaths.clone())
     }
 
 }
@@ -1715,7 +1910,7 @@ pub fn run() {
             commands::parse_demo_players,
             commands::verify_license,
             commands::validate_license_stored,
-            commands::deactivate_license_stored,
+            commands::parse_demo_deaths,
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten der Anwendung");

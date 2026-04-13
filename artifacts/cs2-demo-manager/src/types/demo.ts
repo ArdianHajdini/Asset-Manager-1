@@ -27,6 +27,27 @@ export interface AppSettings {
 
 export type CS2Status = "found" | "not_found" | "unknown";
 
+/** A death event for the local player extracted from a demo. */
+export interface DemoDeathEvent {
+  round: number;
+  tick: number;
+  timeSeconds: number;
+  victimName: string;
+  victimSteamId: string;
+  killerName: string;
+  weapon: string;
+  headshot: boolean;
+  victimPos: [number, number, number];
+  killerPos: [number, number, number];
+  victimEyeYaw: number;
+  victimEyePitch: number;
+  victimSpeed: number;
+  crosshairErrorDeg: number;
+  wasEnemyInFov: boolean;
+  shotBeforeStop: boolean;
+  hasPosData: boolean;
+}
+
 export type StatusMessage =
   | { type: "success"; message: string }
   | { type: "error"; message: string }

@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Key, Loader2, ExternalLink, CheckCircle2, WifiOff } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
-  activateLemonSqueezy,
   activateGumroad,
   getLicenseStatus,
   getStoredLicense,
@@ -24,32 +23,12 @@ const initialSection: SectionState = { key: "", loading: false, error: null, suc
 
 export function LicensePage({ onActivated }: LicensePageProps) {
   const { t } = useTranslation();
-  const [ls, setLs] = useState<SectionState>(initialSection);
   const [gr, setGr] = useState<SectionState>(initialSection);
 
   const status = getLicenseStatus();
   const stored = getStoredLicense();
 
-  async function handleActivateLS() {
-    if (!ls.key.trim()) return;
-    setLs((s) => ({ ...s, loading: true, error: null }));
-    try {
-      const result = await activateLemonSqueezy(ls.key.trim());
-      if (result.success) {
-        setLs((s) => ({ ...s, success: true }));
-        setTimeout(() => onActivated(), 1200);
-      } else {
-        setLs((s) => ({
-          ...s,
-          error: result.error === "network" ? t("license.errorNetwork") : t("license.errorInvalid"),
-        }));
-      }
-    } finally {
-      setLs((s) => ({ ...s, loading: false }));
-    }
-  }
-
-  async function handleActivateGR() {
+  async function handleActivate() {
     if (!gr.key.trim()) return;
     setGr((s) => ({ ...s, loading: true, error: null }));
     try {
@@ -67,8 +46,6 @@ export function LicensePage({ onActivated }: LicensePageProps) {
       setGr((s) => ({ ...s, loading: false }));
     }
   }
-
-  const anySuccess = ls.success || gr.success;
 
   return (
     <div className="min-h-screen flex items-center justify-center px-6 bg-[#0d1117]">
@@ -101,15 +78,18 @@ export function LicensePage({ onActivated }: LicensePageProps) {
           </div>
         )}
 
-        {/* ── LemonSqueezy section ── */}
-        <div className="rounded-2xl border border-white/8 bg-white/3 p-4 space-y-3">
+        {/* ── Gumroad section ── */}
+        <div className="rounded-2xl border border-white/8 bg-white/3 p-5 space-y-4">
           <div className="flex items-center justify-between">
-            <span className="text-white/70 text-sm font-semibold">LemonSqueezy</span>
+            <div>
+              <span className="text-white/70 text-sm font-semibold">{t("license.enterKey")}</span>
+              <p className="text-white/30 text-xs mt-0.5">{t("license.gumroadHint")}</p>
+            </div>
             <a
-              href="https://ardian.lemonsqueezy.com"
+              href="https://ardihajdi.gumroad.com/l/easyDemo"
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-orange-400 hover:text-orange-300 text-xs transition-colors"
+              className="inline-flex items-center gap-1 text-orange-400 hover:text-orange-300 text-xs transition-colors shrink-0"
             >
               <ExternalLink className="w-3 h-3" />
               {t("license.buy")}
@@ -118,73 +98,19 @@ export function LicensePage({ onActivated }: LicensePageProps) {
 
           <input
             type="text"
-            value={ls.key}
-            onChange={(e) => setLs((s) => ({ ...s, key: e.target.value, error: null }))}
-            onKeyDown={(e) => e.key === "Enter" && handleActivateLS()}
-            placeholder={t("license.keyPlaceholder")}
-            disabled={ls.loading || ls.success || anySuccess}
-            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-orange-500/50 transition-colors font-mono disabled:opacity-40"
-          />
-
-          {ls.error && <p className="text-red-400 text-xs">{ls.error}</p>}
-
-          <button
-            onClick={handleActivateLS}
-            disabled={!ls.key.trim() || ls.loading || ls.success || anySuccess}
-            className={cn(
-              "w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium text-sm transition-all disabled:cursor-not-allowed",
-              ls.success
-                ? "bg-green-600 text-white"
-                : "bg-orange-500 hover:bg-orange-400 active:bg-orange-600 text-white disabled:opacity-40"
-            )}
-          >
-            {ls.success ? (
-              <><CheckCircle2 className="w-4 h-4" />{t("license.success")}</>
-            ) : ls.loading ? (
-              <><Loader2 className="w-4 h-4 animate-spin" />{t("license.activating")}</>
-            ) : (
-              <><Key className="w-4 h-4" />{t("license.activate")}</>
-            )}
-          </button>
-        </div>
-
-        {/* Divider */}
-        <div className="flex items-center gap-3 my-4">
-          <div className="flex-1 h-px bg-white/10" />
-          <span className="text-white/25 text-xs uppercase tracking-widest">or</span>
-          <div className="flex-1 h-px bg-white/10" />
-        </div>
-
-        {/* ── Gumroad section ── */}
-        <div className="rounded-2xl border border-white/8 bg-white/3 p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-white/70 text-sm font-semibold">Gumroad</span>
-            <a
-              href="https://ardihajdi.gumroad.com/l/easyDemo"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-orange-400 hover:text-orange-300 text-xs transition-colors"
-            >
-              <ExternalLink className="w-3 h-3" />
-              {t("license.buyGumroad")}
-            </a>
-          </div>
-
-          <input
-            type="text"
             value={gr.key}
             onChange={(e) => setGr((s) => ({ ...s, key: e.target.value, error: null }))}
-            onKeyDown={(e) => e.key === "Enter" && handleActivateGR()}
+            onKeyDown={(e) => e.key === "Enter" && handleActivate()}
             placeholder="XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX"
-            disabled={gr.loading || gr.success || anySuccess}
+            disabled={gr.loading || gr.success}
             className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-orange-500/50 transition-colors font-mono disabled:opacity-40"
           />
 
           {gr.error && <p className="text-red-400 text-xs">{gr.error}</p>}
 
           <button
-            onClick={handleActivateGR}
-            disabled={!gr.key.trim() || gr.loading || gr.success || anySuccess}
+            onClick={handleActivate}
+            disabled={!gr.key.trim() || gr.loading || gr.success}
             className={cn(
               "w-full flex items-center justify-center gap-2 py-2.5 rounded-xl font-medium text-sm transition-all disabled:cursor-not-allowed",
               gr.success
