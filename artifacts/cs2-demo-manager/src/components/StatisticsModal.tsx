@@ -102,7 +102,7 @@ function DeathCard({ death, t }: { death: TauriDeathEvent; t: (key: string) => s
           className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono text-white/20 hover:text-white/50 hover:bg-white/8 transition-all border border-white/8"
           title="Toggle debug info"
         >
-          dbg
+          [debug]
         </button>
       </div>
 
