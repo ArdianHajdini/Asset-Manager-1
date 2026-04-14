@@ -71,6 +71,29 @@ function getExplanation(d: TauriDeathEvent): { text: string; color: string } {
     parts.push(isKill ? "Enemy was stationary." : "You were stationary — good positioning discipline.");
   }
 
+  // Extra context from enriched event data
+  if (d.penetratedObjects > 0) {
+    parts.push(isKill ? `Wallbang through ${d.penetratedObjects} surface(s).` : `You were wallbanged through ${d.penetratedObjects} surface(s).`);
+  }
+  if (d.isTradeKill) {
+    parts.push(isKill ? "This was a trade kill — your teammate was avenged." : "Trade death — your kill was quickly traded.");
+  }
+  if (!isKill && d.isVictimBlinded) {
+    parts.push("You were flashed when you died.");
+  }
+  if (isKill && d.isKillerBlinded) {
+    parts.push("You made this kill while flashed.");
+  }
+  if (!isKill && d.isVictimAirborne) {
+    parts.push("You were airborne — hard to control and easy to hit.");
+  }
+  if (isKill && d.isKillerAirborne) {
+    parts.push("You made this kill while airborne.");
+  }
+  if (d.assisterName) {
+    parts.push(`Assist by ${d.assisterName}.`);
+  }
+
   const color =
     !d.wasEnemyInFov
       ? isKill ? "text-orange-300" : "text-red-400"
@@ -91,10 +114,12 @@ function MapDiagram({
   event,
   radarUrl,
   radarInfo,
+  lowerRadarUrl,
 }: {
   event: TauriDeathEvent;
   radarUrl: string | null;
   radarInfo: MapRadarInfo | null;
+  lowerRadarUrl?: string | null;
 }) {
   if (!event.hasPosData) return null;
 
@@ -118,16 +143,31 @@ function MapDiagram({
 
   // ── Real radar image path ──────────────────────────────────────
   if (radarUrl && radarInfo) {
-    // world → radar pixel (1024×1024 source)
-    const rx = (p: number[]) => (p[0] - radarInfo.posX) / radarInfo.scale;
-    const ry = (p: number[]) => (radarInfo.posY - p[1]) / radarInfo.scale;
+    // Multi-level map support: choose upper or lower radar based on player Z
+    const playerZ = playerPos[2];
+    const useUpper =
+      !radarInfo.thresholdZ ||
+      playerZ >= radarInfo.thresholdZ ||
+      !lowerRadarUrl ||
+      !radarInfo.lowerPosX;
 
-    // radar pixel → SVG coordinate (SIZE×SIZE display)
-    const S = SIZE / 1024;
-    const px = rx(playerPos) * S;
-    const py = ry(playerPos) * S;
-    const ex = rx(enemyPos)  * S;
-    const ey = ry(enemyPos)  * S;
+    const activeRadarUrl = useUpper ? radarUrl : (lowerRadarUrl ?? radarUrl);
+    const activePosX  = useUpper ? radarInfo.posX  : (radarInfo.lowerPosX  ?? radarInfo.posX);
+    const activePosY  = useUpper ? radarInfo.posY  : (radarInfo.lowerPosY  ?? radarInfo.posY);
+    const activeScale = useUpper ? radarInfo.scale : (radarInfo.lowerScale ?? radarInfo.scale);
+    const activeRadarSize = useUpper
+      ? (radarInfo.radarSize ?? 1024)
+      : (radarInfo.lowerRadarSize ?? radarInfo.radarSize ?? 1024);
+    const levelLabel = !useUpper ? " — lower" : "";
+
+    // Corrected cs-demo-manager formula: scaledX = (worldX − posX) / scale × (SIZE / radarSize)
+    const rx = (p: number[]) => (p[0] - activePosX) / activeScale * (SIZE / activeRadarSize);
+    const ry = (p: number[]) => (activePosY - p[1]) / activeScale * (SIZE / activeRadarSize);
+
+    const px = rx(playerPos);
+    const py = ry(playerPos);
+    const ex = rx(enemyPos);
+    const ey = ry(enemyPos);
 
     const svgDist = Math.sqrt((px - ex) ** 2 + (py - ey) ** 2);
     const coneLen = Math.max(18, Math.min(55, svgDist * 0.7));
@@ -144,14 +184,14 @@ function MapDiagram({
       <div className="flex flex-col items-center gap-1.5">
         {event.mapName && (
           <p className="text-[9px] uppercase tracking-widest text-white/25 font-mono">
-            {event.mapName}
+            {event.mapName}{levelLabel}
           </p>
         )}
         <svg
           width={SIZE} height={SIZE}
           className="rounded-xl border border-white/10 overflow-hidden"
         >
-          <image href={radarUrl} x={0} y={0} width={SIZE} height={SIZE} preserveAspectRatio="xMidYMid meet" />
+          <image href={activeRadarUrl} x={0} y={0} width={SIZE} height={SIZE} preserveAspectRatio="xMidYMid meet" />
           <rect x={0} y={0} width={SIZE} height={SIZE} fill="rgba(0,0,0,0.38)" />
 
           {/* Engagement line */}
@@ -293,10 +333,11 @@ function MetricBadge({ label, value, color, icon }: {
 //  Per-event card (kill or death)
 // ─────────────────────────────────────────
 
-function EventCard({ event, radarUrl, radarInfo, t }: {
+function EventCard({ event, radarUrl, radarInfo, lowerRadarUrl, t }: {
   event: TauriDeathEvent;
   radarUrl: string | null;
   radarInfo: MapRadarInfo | null;
+  lowerRadarUrl?: string | null;
   t: (key: string) => string;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -309,13 +350,24 @@ function EventCard({ event, radarUrl, radarInfo, t }: {
     : event.crosshairErrorDeg < 25 ? "text-yellow-400"
     : "text-red-400";
 
-  const speedColor = event.victimSpeed < 10 ? "text-green-400"
-    : event.victimSpeed < 60 ? "text-yellow-400"
+  const speedVal = isKill ? event.killerSpeed : event.victimSpeed;
+  const speedColor = speedVal < 10 ? "text-green-400"
+    : speedVal < 60 ? "text-yellow-400"
     : "text-red-400";
 
   const headerBg = isKill
     ? "bg-emerald-950/30 border-emerald-500/10"
     : "bg-red-950/20 border-red-500/8";
+
+  // Badge pills shown in the event header
+  const badges: { label: string; cls: string }[] = [];
+  if (event.headshot) badges.push({ label: "HS", cls: "bg-red-500/20 text-red-400" });
+  if (event.penetratedObjects > 0) badges.push({ label: `🧱×${event.penetratedObjects}`, cls: "bg-orange-500/20 text-orange-400" });
+  if (event.isTradeKill) badges.push({ label: "⚖️ Trade", cls: "bg-purple-500/20 text-purple-300" });
+  if (isKill && event.isKillerAirborne) badges.push({ label: "✈️ Air", cls: "bg-sky-500/20 text-sky-300" });
+  if (!isKill && event.isVictimAirborne) badges.push({ label: "✈️ Airborne", cls: "bg-sky-500/20 text-sky-300" });
+  if (isKill && event.isKillerBlinded) badges.push({ label: "👁️ Blinded", cls: "bg-yellow-500/20 text-yellow-300" });
+  if (!isKill && event.isVictimBlinded) badges.push({ label: "👁️ Flashed", cls: "bg-yellow-500/20 text-yellow-300" });
 
   return (
     <div className="rounded-xl border border-white/8 bg-white/2 overflow-hidden">
@@ -331,7 +383,7 @@ function EventCard({ event, radarUrl, radarInfo, t }: {
           R{event.round}
         </span>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             {isKill
               ? <Target className="w-3 h-3 text-emerald-400 shrink-0" />
               : <Skull  className="w-3 h-3 text-red-400    shrink-0" />}
@@ -341,9 +393,9 @@ function EventCard({ event, radarUrl, radarInfo, t }: {
             )}>
               {opponentName}
             </span>
-            {event.headshot && (
-              <span className="shrink-0 px-1 py-0.5 rounded bg-red-500/20 text-red-400 text-[9px] font-bold uppercase">HS</span>
-            )}
+            {badges.map((b, i) => (
+              <span key={i} className={cn("shrink-0 px-1 py-0.5 rounded text-[9px] font-bold uppercase", b.cls)}>{b.label}</span>
+            ))}
           </div>
           <div className="flex items-center gap-2 text-[10px] text-white/30">
             <span className="font-mono">{event.weapon}</span>
@@ -352,6 +404,12 @@ function EventCard({ event, radarUrl, radarInfo, t }: {
             <span className={isKill ? "text-emerald-500/60" : "text-red-500/60"}>
               {isKill ? "kill" : "death"}
             </span>
+            {event.assisterName && (
+              <>
+                <span>·</span>
+                <span className="text-violet-400/60">assist: {event.assisterName}</span>
+              </>
+            )}
           </div>
         </div>
         <ChevronDown className={cn(
@@ -376,8 +434,8 @@ function EventCard({ event, radarUrl, radarInfo, t }: {
             icon={<Eye className="w-2.5 h-2.5" />}
           />
           <MetricBadge
-            label={isKill ? "enemy spd" : t("stats.speed")}
-            value={event.hasPosData ? `${Math.round(event.victimSpeed)}` : "–"}
+            label={isKill ? "my speed" : t("stats.speed")}
+            value={event.hasPosData ? `${Math.round(speedVal)}` : "–"}
             color={event.hasPosData ? speedColor : "text-white/20"}
             icon={<Gauge className="w-2.5 h-2.5" />}
           />
@@ -405,8 +463,58 @@ function EventCard({ event, radarUrl, radarInfo, t }: {
 
         {/* Radar map — shown when card is expanded */}
         {expanded && event.hasPosData && (
-          <MapDiagram event={event} radarUrl={radarUrl} radarInfo={radarInfo} />
+          <MapDiagram event={event} radarUrl={radarUrl} radarInfo={radarInfo} lowerRadarUrl={lowerRadarUrl} />
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────
+//  Per-demo summary statistics row
+// ─────────────────────────────────────────
+
+function SummaryStats({ events }: { events: TauriDeathEvent[] }) {
+  const kills  = events.filter(e =>  e.playerIsKiller);
+  const deaths = events.filter(e => !e.playerIsKiller);
+
+  const hs = kills.filter(e => e.headshot).length;
+  const hsPercent = kills.length > 0 ? Math.round(hs / kills.length * 100) : 0;
+  const kd = deaths.length > 0
+    ? (kills.length / deaths.length).toFixed(2)
+    : kills.length > 0 ? "∞" : "0.00";
+
+  // Top kill weapon
+  const weaponMap: Record<string, number> = {};
+  kills.forEach(e => { weaponMap[e.weapon] = (weaponMap[e.weapon] ?? 0) + 1; });
+  const topWeapon = Object.entries(weaponMap).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—";
+
+  // Most frequent killer (of deaths)
+  const killerMap: Record<string, number> = {};
+  deaths.forEach(e => { killerMap[e.killerName] = (killerMap[e.killerName] ?? 0) + 1; });
+  const topKiller = Object.entries(killerMap).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—";
+
+  return (
+    <div className="grid grid-cols-4 gap-2 px-5 py-3 border-b border-white/8 bg-white/[0.01] shrink-0">
+      <div className="flex flex-col items-center">
+        <span className="text-[9px] text-white/25 uppercase tracking-wider">K / D</span>
+        <span className="text-sm font-bold text-white/75">{kills.length}/{deaths.length}</span>
+        <span className="text-[9px] text-white/25 font-mono">{kd}</span>
+      </div>
+      <div className="flex flex-col items-center">
+        <span className="text-[9px] text-white/25 uppercase tracking-wider">HS%</span>
+        <span className="text-sm font-bold text-white/75">{hsPercent}%</span>
+        <span className="text-[9px] text-white/25 font-mono">{hs} hs</span>
+      </div>
+      <div className="flex flex-col items-center overflow-hidden">
+        <span className="text-[9px] text-white/25 uppercase tracking-wider">Top Weapon</span>
+        <span className="text-xs font-bold text-white/75 truncate max-w-full text-center">{topWeapon}</span>
+      </div>
+      <div className="flex flex-col items-center overflow-hidden">
+        <span className="text-[9px] text-white/25 uppercase tracking-wider">Top Killer</span>
+        <span className="text-xs font-bold text-white/75 truncate max-w-full text-center" title={topKiller}>
+          {topKiller.slice(0, 10)}
+        </span>
       </div>
     </div>
   );
@@ -440,6 +548,7 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
   // Radar — one per demo (same map for all events)
   const [radarInfo, setRadarInfo] = useState<MapRadarInfo | null>(null);
   const [radarUrl, setRadarUrl] = useState<string | null>(null);
+  const [lowerRadarUrl, setLowerRadarUrl] = useState<string | null>(null);
 
   // Debug probe
   const [probeResult, setProbeResult] = useState<string | null>(null);
@@ -461,12 +570,13 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
     setAllEvents(null);
     setRadarInfo(null);
     setRadarUrl(null);
+    setLowerRadarUrl(null);
 
     try {
       const result = await tauriParseDemoDeaths(filepath, name);
       setAllEvents(result);
 
-      // Load radar image for this map (silently ignore failure — falls back to relative view)
+      // Load radar image(s) for this map (silently ignore failure — falls back to relative view)
       const mapName = result.length > 0 ? result[0].mapName : "";
       if (mapName && settings.steamPath && isTauri()) {
         try {
@@ -474,6 +584,10 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
           setRadarInfo(info);
           const { convertFileSrc } = await import("@tauri-apps/api/core");
           setRadarUrl(convertFileSrc(info.radarPath));
+          // Load lower-level radar for two-level maps (Nuke, Vertigo, etc.)
+          if (info.lowerRadarPath) {
+            setLowerRadarUrl(convertFileSrc(info.lowerRadarPath));
+          }
         } catch {
           // Radar not available — fallback diagram will be used automatically
         }
@@ -491,6 +605,7 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
     setError(null);
     setRadarInfo(null);
     setRadarUrl(null);
+    setLowerRadarUrl(null);
   }
 
   async function handleProbe() {
@@ -673,6 +788,11 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
         {/* ── Events view ── */}
         {showEvents && (
           <>
+            {/* Per-demo summary stats */}
+            {allEvents && allEvents.length > 0 && (
+              <SummaryStats events={allEvents} />
+            )}
+
             {/* Kills / Deaths tab bar */}
             <div className="flex shrink-0 border-b border-white/8 px-5 pt-3 gap-1 items-end">
               <button
@@ -744,6 +864,7 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
                     event={event}
                     radarUrl={radarUrl}
                     radarInfo={radarInfo}
+                    lowerRadarUrl={lowerRadarUrl}
                     t={t}
                   />
                 ))

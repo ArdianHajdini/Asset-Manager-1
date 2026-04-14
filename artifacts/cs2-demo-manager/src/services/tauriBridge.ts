@@ -224,15 +224,26 @@ export async function tauriValidateLicense(
 
 /**
  * CS2 map radar metadata loaded from the local CS2 installation.
- * posX / posY: world-space coordinates of the top-left corner of the 1024×1024 radar image.
- * scale: world units per pixel.
- * Coordinate transform: radarX = (worldX - posX) / scale, radarY = (posY - worldY) / scale
+ *
+ * Corrected coordinate transform (cs-demo-manager–compatible):
+ *   scaledX = (worldX - posX) / scale × (displaySize / radarSize)
+ *   scaledY = (posY - worldY) / scale × (displaySize / radarSize)
+ *
+ * radarSize is 1024 for most maps, 2048 for maps updated after the May 2025 CS2 patch.
+ * For two-level maps (de_nuke, de_vertigo): use lower* fields when playerZ < thresholdZ.
  */
 export interface MapRadarInfo {
   radarPath: string;
   posX: number;
   posY: number;
   scale: number;
+  radarSize: number;
+  thresholdZ?: number | null;
+  lowerRadarPath?: string | null;
+  lowerPosX?: number | null;
+  lowerPosY?: number | null;
+  lowerScale?: number | null;
+  lowerRadarSize?: number | null;
 }
 
 /**
@@ -269,6 +280,16 @@ export interface TauriDeathEvent {
   killerEyeYaw: number;
   killerEyePitch: number;
   victimSpeed: number;
+  killerSpeed: number;
+  isVictimAirborne: boolean;
+  isKillerAirborne: boolean;
+  isVictimBlinded: boolean;
+  isKillerBlinded: boolean;
+  penetratedObjects: number;
+  isTradeKill: boolean;
+  assisterName: string;
+  assisterSteamId: string;
+  assisterPos: [number, number, number];
   crosshairErrorDeg: number;
   wasEnemyInFov: boolean;
   shotBeforeStop: boolean;

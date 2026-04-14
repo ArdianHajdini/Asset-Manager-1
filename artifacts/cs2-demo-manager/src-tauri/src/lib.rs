@@ -42,14 +42,24 @@ pub struct LicenseValidateResult {
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct MapRadarInfo {
-    /// Absolute path to <map>_radar.png
+    /// Absolute path to <map>_radar.png (upper level)
     pub radar_path: String,
     /// World X coordinate of the top-left corner of the radar image
     pub pos_x: f32,
     /// World Y coordinate of the top-left corner of the radar image
     pub pos_y: f32,
-    /// World units per pixel of the 1024×1024 radar image
+    /// World units per pixel of the radar image
     pub scale: f32,
+    /// Pixel dimensions of the radar image (1024 for most maps, 2048 since May 2025 CS2 update)
+    pub radar_size: u32,
+    /// Z threshold for upper/lower radar selection (None = single-level map)
+    pub threshold_z: Option<f32>,
+    /// Absolute path to lower-level radar PNG (Nuke, Vertigo, etc.)
+    pub lower_radar_path: Option<String>,
+    pub lower_pos_x: Option<f32>,
+    pub lower_pos_y: Option<f32>,
+    pub lower_scale: Option<f32>,
+    pub lower_radar_size: Option<u32>,
 }
 
 /// A single death event for the local player, returned by parse_demo_deaths.
@@ -84,6 +94,36 @@ pub struct DemoDeathEvent {
     /// Horizontal speed of victim at death (units/s)
     #[serde(rename = "victimSpeed")]
     pub victim_speed: f32,
+    /// Horizontal speed of killer at death (units/s)
+    #[serde(rename = "killerSpeed")]
+    pub killer_speed: f32,
+    /// True if victim was airborne (|vel_z| > 100) at death
+    #[serde(rename = "isVictimAirborne")]
+    pub is_victim_airborne: bool,
+    /// True if killer was airborne (attackerinair game event flag)
+    #[serde(rename = "isKillerAirborne")]
+    pub is_killer_airborne: bool,
+    /// True if victim had active flash effect at death
+    #[serde(rename = "isVictimBlinded")]
+    pub is_victim_blinded: bool,
+    /// True if killer was blinded (attackerblind game event flag)
+    #[serde(rename = "isKillerBlinded")]
+    pub is_killer_blinded: bool,
+    /// Number of objects penetrated (> 0 = wallbang)
+    #[serde(rename = "penetratedObjects")]
+    pub penetrated_objects: u8,
+    /// True if victim killed someone within ~5 s before being killed (trade kill)
+    #[serde(rename = "isTradeKill")]
+    pub is_trade_kill: bool,
+    /// Name of the assisting player (empty if no assist)
+    #[serde(rename = "assisterName")]
+    pub assister_name: String,
+    /// Steam ID of the assisting player (empty if no assist)
+    #[serde(rename = "assisterSteamId")]
+    pub assister_steam_id: String,
+    /// World position [x,y,z] of assister at death tick ([0,0,0] if no assist)
+    #[serde(rename = "assisterPos")]
+    pub assister_pos: [f32; 3],
     /// Angle in degrees between the PLAYER's view direction and the enemy's position.
     /// For deaths: from victim toward killer. For kills: from killer toward victim.
     #[serde(rename = "crosshairErrorDeg")]
@@ -1680,6 +1720,8 @@ pub mod commands {
             pub eye_pitch: f32,
             pub vel_x: f32,
             pub vel_y: f32,
+            pub vel_z: f32,
+            pub flash_duration: f32,
         }
 
         pub struct DeathObserver {
@@ -1698,6 +1740,8 @@ pub mod commands {
             /// Filter: only keep events where victim_name OR killer_name == this string.
             /// Empty string = keep all events.
             pub target_player_name: String,
+            /// controller entity_index → tick of their most recent kill (for trade detection)
+            pub last_kill_tick: HashMap<u32, u32>,
             /// how many controllers we have logged via eprintln (capped at 3)
             pub dbg_ctrl_seen: u32,
             /// how many pawns we have logged via eprintln (capped at 3)
@@ -1715,6 +1759,7 @@ pub mod commands {
                     current_round: 0,
                     map_name: String::new(),
                     target_player_name: String::new(),
+                    last_kill_tick: HashMap::new(),
                     dbg_ctrl_seen: 0,
                     dbg_pawn_seen: 0,
                 }
@@ -1874,6 +1919,13 @@ pub mod commands {
                     // Velocity components
                     snap.vel_x = get_f32(entity, "m_vecVelocity[0]");
                     snap.vel_y = get_f32(entity, "m_vecVelocity[1]");
+                    snap.vel_z = get_f32(entity, "m_vecVelocity[2]");
+
+                    // Flash duration (> 0 means the player is currently blinded)
+                    let fd = get_f32(entity, "m_flFlashDuration");
+                    if fd > 0.0 {
+                        snap.flash_duration = fd;
+                    }
                 }
 
                 Ok(())
@@ -1909,9 +1961,39 @@ pub mod commands {
                             .ok()
                             .and_then(|v| TryInto::<i32>::try_into(v).ok())
                             .unwrap_or(0);
+                        let raw_assister: i32 = event
+                            .get_value("assister")
+                            .ok()
+                            .and_then(|v| TryInto::<i32>::try_into(v).ok())
+                            .unwrap_or(-1);
+
+                        // Number of objects the bullet passed through (wallbang indicator)
+                        let penetrated_objects: u8 = event
+                            .get_value("penetrated")
+                            .ok()
+                            .and_then(|v| TryInto::<i32>::try_into(v).ok())
+                            .unwrap_or(0)
+                            .clamp(0, 255) as u8;
+
+                        // Attacker-side flags from the game event
+                        let is_killer_blinded: bool = event
+                            .get_value("attackerblind")
+                            .ok()
+                            .and_then(|v| TryInto::<bool>::try_into(v).ok())
+                            .unwrap_or(false);
+                        let is_killer_airborne: bool = event
+                            .get_value("attackerinair")
+                            .ok()
+                            .and_then(|v| TryInto::<bool>::try_into(v).ok())
+                            .unwrap_or(false);
 
                         let victim_ctrl: u32 = (raw_userid as u32) & 0x3FFF;
                         let killer_ctrl: u32 = (raw_attacker as u32) & 0x3FFF;
+                        let assister_ctrl: u32 = if raw_assister > 0 {
+                            (raw_assister as u32) & 0x3FFF
+                        } else {
+                            0
+                        };
 
                         let victim_name = self
                             .ctrl_name
@@ -1937,6 +2019,9 @@ pub mod commands {
                             && victim_name != self.target_player_name
                             && killer_name != self.target_player_name
                         {
+                            // Still update trade-kill tracking even for skipped events
+                            let tick_now = ctx.tick() as u32;
+                            self.last_kill_tick.insert(killer_ctrl, tick_now);
                             return Ok(());
                         }
 
@@ -1955,6 +2040,11 @@ pub mod commands {
 
                         let victim_snap = get_snap(victim_ctrl).unwrap_or_default();
                         let killer_snap = get_snap(killer_ctrl).unwrap_or_default();
+                        let assister_snap = if assister_ctrl > 0 {
+                            get_snap(assister_ctrl).unwrap_or_default()
+                        } else {
+                            PawnSnapshot::default()
+                        };
 
                         let has_pos_data = victim_snap.x != 0.0 || victim_snap.y != 0.0;
                         let both_positions = has_pos_data
@@ -1974,9 +2064,38 @@ pub mod commands {
                                 (0.0, false)
                             };
 
-                        let speed = (victim_snap.vel_x.powi(2) + victim_snap.vel_y.powi(2)).sqrt();
+                        let victim_speed = (victim_snap.vel_x.powi(2) + victim_snap.vel_y.powi(2)).sqrt();
+                        let killer_speed = (killer_snap.vel_x.powi(2) + killer_snap.vel_y.powi(2)).sqrt();
+
+                        // Airborne: vertical speed > 100 u/s heuristic (CS2 vel_z > 0 while jumping)
+                        let is_victim_airborne = victim_snap.vel_z.abs() > 100.0;
+
+                        // Victim blinded: non-zero flash duration in entity state
+                        let is_victim_blinded = victim_snap.flash_duration > 0.0;
+
                         let tick = ctx.tick() as u32;
                         let time_seconds = tick as f32 / 64.0;
+
+                        // Trade kill: victim made a kill within ~5 s (320 ticks at 64 Hz) before dying
+                        let is_trade_kill = self.last_kill_tick
+                            .get(&victim_ctrl)
+                            .map(|&last_tick| tick.saturating_sub(last_tick) <= 320)
+                            .unwrap_or(false);
+
+                        // Update kill tracking for future trade detection
+                        self.last_kill_tick.insert(killer_ctrl, tick);
+
+                        // Assister info
+                        let assister_name = if assister_ctrl > 0 {
+                            self.ctrl_name.get(&assister_ctrl).cloned().unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        let assister_steam_id = if assister_ctrl > 0 {
+                            self.ctrl_steamid.get(&assister_ctrl).cloned().unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
 
                         let victim_pawn_str = self.ctrl_to_pawn
                             .get(&victim_ctrl)
@@ -2012,10 +2131,20 @@ pub mod commands {
                             victim_eye_pitch: victim_snap.eye_pitch,
                             killer_eye_yaw: killer_snap.eye_yaw,
                             killer_eye_pitch: killer_snap.eye_pitch,
-                            victim_speed: speed,
+                            victim_speed,
+                            killer_speed,
+                            is_victim_airborne,
+                            is_killer_airborne,
+                            is_victim_blinded,
+                            is_killer_blinded,
+                            penetrated_objects,
+                            is_trade_kill,
+                            assister_name,
+                            assister_steam_id,
+                            assister_pos: [assister_snap.x, assister_snap.y, assister_snap.z],
                             crosshair_error_deg,
                             was_enemy_in_fov,
-                            shot_before_stop: speed > 10.0,
+                            shot_before_stop: victim_speed > 10.0,
                             has_pos_data,
                             player_is_killer,
                             map_name: self.map_name.clone(),
@@ -2209,34 +2338,129 @@ pub mod commands {
         Ok(obs.deaths.clone())
     }
 
-    /// Parse a Valve KeyValues .txt file and extract pos_x, pos_y, scale.
-    /// Line format: \t"key"\t"value"
-    fn parse_overview_kv(content: &str) -> Option<(f32, f32, f32)> {
+    /// Parsed data from a CS2 overview .txt file.
+    struct OverviewData {
+        pos_x: f32,
+        pos_y: f32,
+        scale: f32,
+        /// Pixel dimension of the radar image (1024 for most maps; 2048 since May 2025 CS2 update)
+        radar_size: u32,
+        /// zoom_alt section data (for maps with upper + lower levels, e.g. Nuke, Vertigo)
+        lower_pos_x: Option<f32>,
+        lower_pos_y: Option<f32>,
+        lower_scale: Option<f32>,
+        lower_radar_size: Option<u32>,
+    }
+
+    /// Parse a Valve KeyValues .txt overview file.
+    ///
+    /// Handles both the main section and the optional `zoom_alt` sub-section used
+    /// by two-level maps (de_nuke, de_vertigo, …).  The `Resolution` key sets the
+    /// radar image pixel size (defaults to 1024 when absent).
+    ///
+    /// cs-demo-manager formula (corrected for radarSize):
+    ///   scaledX = (worldX − posX) / scale × (displaySize / radarSize)
+    ///   scaledY = (posY − worldY) / scale × (displaySize / radarSize)
+    fn parse_overview_kv(content: &str) -> Option<OverviewData> {
         let mut pos_x: Option<f32> = None;
         let mut pos_y: Option<f32> = None;
         let mut scale: Option<f32> = None;
+        let mut radar_size: u32 = 1024;
+
+        let mut lower_pos_x: Option<f32> = None;
+        let mut lower_pos_y: Option<f32> = None;
+        let mut lower_scale: Option<f32> = None;
+        let mut lower_radar_size: u32 = 1024;
+
+        // State machine for zoom_alt block
+        let mut next_block_is_zoom_alt = false;
+        let mut in_zoom_alt = false;
+        let mut zoom_alt_brace_depth: i32 = 0;
+        let mut brace_depth: i32 = 0;
+
         for line in content.lines() {
-            let parts: Vec<&str> = line.split('"').collect();
-            if parts.len() >= 4 {
+            let trimmed = line.trim();
+
+            if trimmed == "{" {
+                brace_depth += 1;
+                if next_block_is_zoom_alt {
+                    in_zoom_alt = true;
+                    zoom_alt_brace_depth = brace_depth;
+                    next_block_is_zoom_alt = false;
+                }
+                continue;
+            }
+            if trimmed == "}" {
+                if in_zoom_alt && brace_depth == zoom_alt_brace_depth {
+                    in_zoom_alt = false;
+                }
+                brace_depth -= 1;
+                continue;
+            }
+
+            // Split on " to identify keys and values
+            let parts: Vec<&str> = trimmed.split('"').collect();
+
+            // Section header (just a key, no value): ["", "zoom_alt", ""] → 3 parts
+            if parts.len() == 3 && parts[1] == "zoom_alt" {
+                next_block_is_zoom_alt = true;
+                continue;
+            }
+
+            // Key-value pair: ["", "key", "...", "value", ""] → >= 5 parts
+            if parts.len() >= 5 {
                 let key = parts[1];
                 let value = parts[3];
-                match key {
-                    "pos_x" => pos_x = value.parse().ok(),
-                    "pos_y" => pos_y = value.parse().ok(),
-                    "scale" => scale = value.parse().ok(),
-                    _ => {}
+                if in_zoom_alt {
+                    match key {
+                        "pos_x"      => lower_pos_x   = value.parse().ok(),
+                        "pos_y"      => lower_pos_y   = value.parse().ok(),
+                        "scale"      => lower_scale   = value.parse().ok(),
+                        "Resolution" => lower_radar_size = value.parse().unwrap_or(1024),
+                        _ => {}
+                    }
+                } else {
+                    match key {
+                        "pos_x"      => pos_x      = value.parse().ok(),
+                        "pos_y"      => pos_y      = value.parse().ok(),
+                        "scale"      => scale      = value.parse().ok(),
+                        "Resolution" => radar_size = value.parse().unwrap_or(1024),
+                        _ => {}
+                    }
                 }
             }
         }
-        Some((pos_x?, pos_y?, scale?))
+
+        let has_lower = lower_pos_x.is_some() && lower_pos_y.is_some() && lower_scale.is_some();
+
+        Some(OverviewData {
+            pos_x: pos_x?,
+            pos_y: pos_y?,
+            scale: scale?,
+            radar_size,
+            lower_pos_x,
+            lower_pos_y,
+            lower_scale,
+            lower_radar_size: if has_lower { Some(lower_radar_size) } else { None },
+        })
+    }
+
+    /// Returns the Z threshold below which players are on the lower radar level.
+    /// Based on known CS2 map geometry (hardcoded as a fallback lookup table).
+    fn get_threshold_z(map_name: &str) -> Option<f32> {
+        match map_name {
+            "de_nuke"    => Some(-495.0),
+            "de_vertigo" => Some(11700.0),
+            _            => None,
+        }
     }
 
     /// Load CS2 map radar metadata from the local CS2 installation.
     ///
-    /// Returns the absolute path to the radar PNG and the coordinate transform
-    /// values needed to project world-space positions onto the 1024×1024 image:
-    ///   radar_x = (world_x - pos_x) / scale
-    ///   radar_y = (pos_y  - world_y) / scale
+    /// Returns the radar PNG path(s) plus coordinate transform values.
+    /// Corrected formula (cs-demo-manager compatible, handles 1024 and 2048 px images):
+    ///   scaledX = (worldX − posX) / scale × (displaySize / radarSize)
+    ///   scaledY = (posY  − worldY) / scale × (displaySize / radarSize)
     #[tauri::command]
     pub fn get_map_radar_info(
         steam_path: String,
@@ -2255,7 +2479,7 @@ pub mod commands {
         let content = fs::read_to_string(&txt_path)
             .map_err(|e| format!("Cannot read overview for {}: {}", map_name, e))?;
 
-        let (pos_x, pos_y, scale) = parse_overview_kv(&content)
+        let ov = parse_overview_kv(&content)
             .ok_or_else(|| format!("Failed to parse pos_x/pos_y/scale from {}.txt", map_name))?;
 
         let radar_path = overviews.join(format!("{}_radar.png", map_name));
@@ -2266,11 +2490,32 @@ pub mod commands {
             ));
         }
 
+        // Check for a lower-level radar image (Nuke, Vertigo, etc.)
+        let lower_radar_path = if ov.lower_pos_x.is_some() {
+            let lower_png = overviews.join(format!("{}_radar_lower.png", map_name));
+            if lower_png.exists() {
+                Some(lower_png.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let threshold_z = get_threshold_z(&map_name);
+
         Ok(super::MapRadarInfo {
             radar_path: radar_path.to_string_lossy().to_string(),
-            pos_x,
-            pos_y,
-            scale,
+            pos_x: ov.pos_x,
+            pos_y: ov.pos_y,
+            scale: ov.scale,
+            radar_size: ov.radar_size,
+            threshold_z,
+            lower_radar_path,
+            lower_pos_x: ov.lower_pos_x,
+            lower_pos_y: ov.lower_pos_y,
+            lower_scale: ov.lower_scale,
+            lower_radar_size: ov.lower_radar_size,
         })
     }
 

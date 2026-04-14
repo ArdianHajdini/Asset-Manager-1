@@ -44,6 +44,16 @@ export interface DemoDeathEvent {
   killerEyeYaw: number;
   killerEyePitch: number;
   victimSpeed: number;
+  killerSpeed: number;
+  isVictimAirborne: boolean;
+  isKillerAirborne: boolean;
+  isVictimBlinded: boolean;
+  isKillerBlinded: boolean;
+  penetratedObjects: number;
+  isTradeKill: boolean;
+  assisterName: string;
+  assisterSteamId: string;
+  assisterPos: [number, number, number];
   crosshairErrorDeg: number;
   wasEnemyInFov: boolean;
   shotBeforeStop: boolean;
