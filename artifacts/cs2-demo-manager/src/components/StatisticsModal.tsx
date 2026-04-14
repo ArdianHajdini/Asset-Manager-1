@@ -506,10 +506,10 @@ function SummaryStats({ events }: { events: TauriDeathEvent[] }) {
     ? (kills.length / deaths.length).toFixed(2)
     : kills.length > 0 ? "∞" : "0.00";
 
-  // Average player speed across all events (killer speed for kills, victim speed for deaths)
-  const speedSamples = events.filter(e => e.hasPosData).map(e => e.playerIsKiller ? e.killerSpeed : e.victimSpeed);
-  const avgSpeed = speedSamples.length > 0
-    ? Math.round(speedSamples.reduce((s, v) => s + v, 0) / speedSamples.length)
+  // Average victim speed across death events (how fast the player was moving when they died)
+  const deathSpeeds = deaths.filter(e => e.hasPosData).map(e => e.victimSpeed);
+  const avgSpeed = deathSpeeds.length > 0
+    ? Math.round(deathSpeeds.reduce((s, v) => s + v, 0) / deathSpeeds.length)
     : 0;
 
   // Top kill weapon

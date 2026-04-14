@@ -1921,11 +1921,8 @@ pub mod commands {
                     snap.vel_y = get_f32(entity, "m_vecVelocity[1]");
                     snap.vel_z = get_f32(entity, "m_vecVelocity[2]");
 
-                    // Flash duration (> 0 means the player is currently blinded)
-                    let fd = get_f32(entity, "m_flFlashDuration");
-                    if fd > 0.0 {
-                        snap.flash_duration = fd;
-                    }
+                    // Flash duration — always overwrite so it resets to 0 when flash expires.
+                    snap.flash_duration = get_f32(entity, "m_flFlashDuration");
                 }
 
                 Ok(())
@@ -2350,6 +2347,9 @@ pub mod commands {
         lower_pos_y: Option<f32>,
         lower_scale: Option<f32>,
         lower_radar_size: Option<u32>,
+        /// Z threshold from the zoom_alt block's `altitude_max` (upper bound of lower level).
+        /// When present, use this instead of the hardcoded fallback table.
+        lower_altitude_max: Option<f32>,
     }
 
     /// Parse a Valve KeyValues .txt overview file.
@@ -2371,6 +2371,7 @@ pub mod commands {
         let mut lower_pos_y: Option<f32> = None;
         let mut lower_scale: Option<f32> = None;
         let mut lower_radar_size: u32 = 1024;
+        let mut lower_altitude_max: Option<f32> = None;
 
         // State machine for zoom_alt block
         let mut next_block_is_zoom_alt = false;
@@ -2413,10 +2414,11 @@ pub mod commands {
                 let value = parts[3];
                 if in_zoom_alt {
                     match key {
-                        "pos_x"      => lower_pos_x   = value.parse().ok(),
-                        "pos_y"      => lower_pos_y   = value.parse().ok(),
-                        "scale"      => lower_scale   = value.parse().ok(),
-                        "Resolution" => lower_radar_size = value.parse().unwrap_or(1024),
+                        "pos_x"        => lower_pos_x      = value.parse().ok(),
+                        "pos_y"        => lower_pos_y      = value.parse().ok(),
+                        "scale"        => lower_scale      = value.parse().ok(),
+                        "Resolution"   => lower_radar_size = value.parse().unwrap_or(1024),
+                        "altitude_max" => lower_altitude_max = value.parse().ok(),
                         _ => {}
                     }
                 } else {
@@ -2442,6 +2444,7 @@ pub mod commands {
             lower_pos_y,
             lower_scale,
             lower_radar_size: if has_lower { Some(lower_radar_size) } else { None },
+            lower_altitude_max: if has_lower { lower_altitude_max } else { None },
         })
     }
 
@@ -2502,7 +2505,9 @@ pub mod commands {
             None
         };
 
-        let threshold_z = get_threshold_z(&map_name);
+        // Threshold Z: prefer altitude_max from the overview file's zoom_alt section;
+        // fall back to hardcoded geometry table for Nuke / Vertigo.
+        let threshold_z = ov.lower_altitude_max.or_else(|| get_threshold_z(&map_name));
 
         Ok(super::MapRadarInfo {
             radar_path: radar_path.to_string_lossy().to_string(),
