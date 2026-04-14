@@ -1963,8 +1963,8 @@ pub mod commands {
                     let hist = self.pawn_vel_history.entry(idx).or_default();
                     if hist.last().map(|(t, _)| *t) != Some(current_tick) {
                         hist.push((current_tick, horiz_speed));
-                        // Cap history at 32 entries (~0.5 s at 64 Hz)
-                        if hist.len() > 32 {
+                        // Cap history at 16 entries (~250 ms at 64 Hz — the pre-shot window)
+                        if hist.len() > 16 {
                             hist.remove(0);
                         }
                     }
@@ -1994,14 +1994,15 @@ pub mod commands {
                             if let Some(snap) = self.pawn_snapshots.get(&pawn_idx) {
                                 let speed_at_shot = (snap.vel_x.powi(2) + snap.vel_y.powi(2)).sqrt();
 
-                                // Gather pre-shot velocity samples (ticks 3–20 before shot).
+                                // CS2 demos run at 64 Hz (64 ticks/s). 16 ticks = ~250 ms.
+                                // Gather pre-shot velocity samples in window ticks 2–16 before shot.
                                 let pre_speeds: Vec<f32> = self.pawn_vel_history
                                     .get(&pawn_idx)
                                     .map(|hist| {
                                         hist.iter()
                                             .filter(|(t, _)| {
                                                 let diff = fire_tick.saturating_sub(*t);
-                                                diff >= 3 && diff <= 20
+                                                diff >= 2 && diff <= 16
                                             })
                                             .map(|(_, s)| *s)
                                             .collect()
@@ -2010,28 +2011,31 @@ pub mod commands {
 
                                 let max_pre_speed = pre_speeds.iter().cloned().fold(0.0_f32, f32::max);
 
-                                // Counter-strafe score:
-                                //  -1.0 → player was already stationary (not relevant)
-                                //   0.0 → sprinting at shot
-                                //   1.0 → perfect stop before shot
-                                let (counter_strafe_score, was_moving_before) =
-                                    if max_pre_speed < 50.0 {
-                                        // Player was barely moving before the shot — not relevant
-                                        (-1.0_f32, false)
-                                    } else {
-                                        let score = if speed_at_shot < 10.0 {
-                                            1.0
-                                        } else if speed_at_shot < 30.0 {
-                                            0.80
-                                        } else if speed_at_shot < 80.0 {
-                                            0.50
-                                        } else if speed_at_shot < 150.0 {
-                                            0.25
-                                        } else {
-                                            0.0
-                                        };
-                                        (score, true)
-                                    };
+                                // Counter-strafe score is derived PURELY from speed at the shot tick.
+                                //   0 u/s  → 1.00 (100%) — completely stationary, perfect
+                                //   <5     → 0.95
+                                //   <20    → 0.80 (shift-walking speed range)
+                                //   <60    → 0.60
+                                //   <130   → 0.30 (running range)
+                                //   else   → 0.05 (full sprint)
+                                //
+                                // was_moving_before = true when the player was running in
+                                // the pre-shot window (max_pre_speed ≥ 50 u/s), giving
+                                // context for whether a counter-strafe was actually performed.
+                                let counter_strafe_score: f32 = if speed_at_shot < 1.0 {
+                                    1.00
+                                } else if speed_at_shot < 5.0 {
+                                    0.95
+                                } else if speed_at_shot < 20.0 {
+                                    0.80
+                                } else if speed_at_shot < 60.0 {
+                                    0.60
+                                } else if speed_at_shot < 130.0 {
+                                    0.30
+                                } else {
+                                    0.05
+                                };
+                                let was_moving_before = max_pre_speed >= 50.0;
 
                                 self.last_weapon_fire.insert(shooter_ctrl, WeaponFireInfo {
                                     tick: fire_tick,

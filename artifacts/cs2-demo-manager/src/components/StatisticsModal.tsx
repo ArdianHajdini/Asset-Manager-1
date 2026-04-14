@@ -396,29 +396,48 @@ function MetricBadge({ label, value, color, icon }: {
 }
 
 // ─────────────────────────────────────────
-//  Counter-strafe score → label + color
+//  Counter-strafe score → display info
+//  Score is purely derived from speed at shot (Rust side):
+//    0 u/s   → 1.00 (100%)   perfectly stationary
+//    < 5     → 0.95
+//    < 20    → 0.80
+//    < 60    → 0.60
+//    < 130   → 0.30
+//    else    → 0.05
+//  -1.0 → weapon_fire data not captured
 // ─────────────────────────────────────────
 
-function csInfo(score: number, wasMoving: boolean): { label: string; color: string; bar: number } {
-  if (!wasMoving) return { label: "Stationary", color: "text-white/30", bar: 0 };
-  if (score < 0)  return { label: "—",          color: "text-white/25", bar: 0 };
-  if (score >= 0.9) return { label: "Perfect ✓", color: "text-emerald-400", bar: 1.0 };
-  if (score >= 0.7) return { label: "Good",       color: "text-lime-400",    bar: 0.75 };
-  if (score >= 0.4) return { label: "Partial",    color: "text-yellow-400",  bar: 0.50 };
-  if (score >= 0.1) return { label: "Poor",       color: "text-orange-400",  bar: 0.25 };
-  return               { label: "Moving",      color: "text-red-400",     bar: 0.05 };
+function csInfo(score: number, wasMovingBefore: boolean): {
+  label: string; sublabel: string; color: string; bar: number;
+} {
+  if (score < 0) return { label: "—", sublabel: "", color: "text-white/25", bar: 0 };
+  const pct = Math.round(score * 100);
+  const context = wasMovingBefore ? " ✓ counter-strafed" : " (held still)";
+  if (score >= 0.98) return { label: "100%",    sublabel: context, color: "text-emerald-400", bar: 1.00 };
+  if (score >= 0.90) return { label: `${pct}%`, sublabel: context, color: "text-emerald-400", bar: score };
+  if (score >= 0.75) return { label: `${pct}%`, sublabel: context, color: "text-lime-400",    bar: score };
+  if (score >= 0.55) return { label: `${pct}%`, sublabel: " moving",   color: "text-yellow-400",  bar: score };
+  if (score >= 0.25) return { label: `${pct}%`, sublabel: " running",  color: "text-orange-400",  bar: score };
+  return               { label: `${pct}%`, sublabel: " sprinting", color: "text-red-400",     bar: score };
 }
 
 // ─────────────────────────────────────────
-//  Speed value → color band
+//  CS2 real speed thresholds
+//  Rifle run: ~215 u/s | Shift-walk: ~100-130 u/s
 // ─────────────────────────────────────────
 
 function speedColor(spd: number) {
-  if (spd < 10)  return "text-emerald-400";
-  if (spd < 30)  return "text-lime-400";
-  if (spd < 80)  return "text-yellow-400";
-  if (spd < 150) return "text-orange-400";
-  return "text-red-400";
+  if (spd <   5) return "text-emerald-400";   // Stationary
+  if (spd <  60) return "text-lime-400";       // Slow / shift-walking
+  if (spd < 130) return "text-yellow-400";     // Walking
+  return "text-red-400";                        // Running (130+ u/s)
+}
+
+function speedLabel(spd: number): string {
+  if (spd <   5) return "Stationary";
+  if (spd <  60) return "Slow";
+  if (spd < 130) return "Walking";
+  return "Running";
 }
 
 // ─────────────────────────────────────────
@@ -522,13 +541,12 @@ function EventCard({ event, t }: {
               <span className="text-[9px] text-white/20 font-mono">u/s</span>
               {event.hasPosData && (
                 <span className={cn("text-[9px] px-1 py-0.5 rounded font-semibold",
-                  shotSpd < 10  ? "bg-emerald-500/15 text-emerald-400" :
-                  shotSpd < 30  ? "bg-lime-500/15 text-lime-400"       :
-                  shotSpd < 80  ? "bg-yellow-500/15 text-yellow-400"   :
-                  shotSpd < 150 ? "bg-orange-500/15 text-orange-400"   :
+                  shotSpd <   5 ? "bg-emerald-500/15 text-emerald-400" :
+                  shotSpd <  60 ? "bg-lime-500/15 text-lime-400"       :
+                  shotSpd < 130 ? "bg-yellow-500/15 text-yellow-400"   :
                                   "bg-red-500/15 text-red-400"
                 )}>
-                  {shotSpd < 10 ? "Still" : shotSpd < 30 ? "Slow" : shotSpd < 80 ? "Moving" : shotSpd < 150 ? "Running" : "Sprint"}
+                  {speedLabel(shotSpd)}
                 </span>
               )}
             </div>
@@ -544,18 +562,21 @@ function EventCard({ event, t }: {
                     {isKill ? "your counter-strafe" : "enemy counter-strafe"}
                   </span>
                 </div>
-                <span className={cn("text-[11px] font-bold", cs.color)}>{cs.label}</span>
+                <div className="flex items-center gap-1">
+                  <span className={cn("text-sm font-bold tabular-nums", cs.color)}>{cs.label}</span>
+                  <span className={cn("text-[9px]", cs.color, "opacity-60")}>{cs.sublabel}</span>
+                </div>
               </div>
-              {/* Visual quality bar — only shown when moving before shot */}
-              {event.wasMovingBeforeShot && event.counterStrafeScore >= 0 && (
-                <div className="h-1 rounded-full bg-white/8 overflow-hidden">
+              {/* Visual quality bar — shown whenever we have valid score data */}
+              {event.counterStrafeScore >= 0 && (
+                <div className="h-1.5 rounded-full bg-white/8 overflow-hidden">
                   <div
                     className={cn(
-                      "h-full rounded-full transition-all",
-                      cs.bar >= 0.9 ? "bg-emerald-500" :
-                      cs.bar >= 0.7 ? "bg-lime-500"    :
-                      cs.bar >= 0.4 ? "bg-yellow-500"  :
-                      cs.bar >= 0.2 ? "bg-orange-500"  : "bg-red-500"
+                      "h-full rounded-full",
+                      cs.bar >= 0.92 ? "bg-emerald-500" :
+                      cs.bar >= 0.75 ? "bg-lime-500"    :
+                      cs.bar >= 0.55 ? "bg-yellow-500"  :
+                      cs.bar >= 0.25 ? "bg-orange-500"  : "bg-red-500"
                     )}
                     style={{ width: `${cs.bar * 100}%` }}
                   />
@@ -565,7 +586,7 @@ function EventCard({ event, t }: {
           )}
         </div>
 
-        {/* Secondary metrics: crosshair + enemy speed */}
+        {/* Secondary metrics: crosshair + enemy movement check */}
         <div className="grid grid-cols-3 gap-1.5">
           <MetricBadge
             label={t("stats.crosshairError")}
@@ -579,11 +600,12 @@ function EventCard({ event, t }: {
             color={!event.hasPosData ? "text-white/20" : event.wasEnemyInFov ? "text-green-400" : "text-red-400"}
             icon={<Eye className="w-2.5 h-2.5" />}
           />
+          {/* Enemy movement state — answers "was the enemy really stationary?" */}
           <MetricBadge
-            label={isKill ? "enemy speed" : "your speed"}
-            value={event.hasPosData ? `${enemySpd}` : "–"}
+            label={isKill ? "enemy was" : "you were"}
+            value={event.hasPosData ? speedLabel(enemySpd) : "–"}
             color={event.hasPosData ? enemySpdColor : "text-white/20"}
-            icon={<Gauge className="w-2.5 h-2.5" />}
+            icon={<Footprints className="w-2.5 h-2.5" />}
           />
         </div>
 
