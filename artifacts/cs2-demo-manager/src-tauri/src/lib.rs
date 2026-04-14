@@ -1768,7 +1768,8 @@ pub mod commands {
             /// controller entity_index → tick of their most recent kill (for trade detection)
             pub last_kill_tick: HashMap<u32, u32>,
             /// pawn entity_index → recent (tick, horizontal_speed) samples.
-            /// Updated every entity tick; capped at 32 entries.
+            /// Updated every entity tick; capped at 16 entries (~250 ms at 64 Hz).
+            /// SourceTV pawns (Z > 500) are excluded.
             pub pawn_vel_history: HashMap<u32, Vec<(u32, f32)>>,
             /// controller entity_index → info from their most recent weapon_fire event.
             pub last_weapon_fire: HashMap<u32, WeaponFireInfo>,
@@ -1893,10 +1894,14 @@ pub mod commands {
                         self.dbg_ctrl_seen += 1;
                     }
 
-                    if !name.is_empty() {
+                    // Only register real players — SourceTV/GOTV has steamID = 0.
+                    // Require a valid Steam ID before inserting into ctrl_name so that
+                    // GOTV never appears as a participant in kill/death events.
+                    let is_real_player = steamid > 76_561_197_960_265_728;
+                    if !name.is_empty() && is_real_player {
                         self.ctrl_name.insert(idx, name);
                     }
-                    if steamid > 76_561_197_960_265_728 {
+                    if is_real_player {
                         self.ctrl_steamid.insert(idx, steamid.to_string());
                     }
                     if pawn_idx > 0 && pawn_idx < 4096 {
@@ -1948,24 +1953,45 @@ pub mod commands {
                         snap.eye_yaw   = get_f32(entity, "m_angEyeAngles[1]");
                     }
 
-                    // Velocity components
-                    snap.vel_x = get_f32(entity, "m_vecVelocity[0]");
-                    snap.vel_y = get_f32(entity, "m_vecVelocity[1]");
-                    snap.vel_z = get_f32(entity, "m_vecVelocity[2]");
+                    // Velocity — in CS2 demos m_vecVelocity is only exposed as a vec3;
+                    // the indexed float variants ([0]/[1]/[2]) do NOT exist as separate
+                    // properties and silently return 0.0. Always read the vec3 first,
+                    // fall back to indexed floats only if the vec3 is all-zero.
+                    {
+                        let vel3 = get_vec3(entity, "m_vecVelocity");
+                        if vel3[0] != 0.0 || vel3[1] != 0.0 || vel3[2] != 0.0 {
+                            snap.vel_x = vel3[0];
+                            snap.vel_y = vel3[1];
+                            snap.vel_z = vel3[2];
+                        } else {
+                            let vx = get_f32(entity, "m_vecVelocity[0]");
+                            let vy = get_f32(entity, "m_vecVelocity[1]");
+                            let vz = get_f32(entity, "m_vecVelocity[2]");
+                            if vx != 0.0 || vy != 0.0 || vz != 0.0 {
+                                snap.vel_x = vx;
+                                snap.vel_y = vy;
+                                snap.vel_z = vz;
+                            }
+                        }
+                    }
 
                     // Flash duration — always overwrite so it resets to 0 when flash expires.
                     snap.flash_duration = get_f32(entity, "m_flFlashDuration");
 
                     // Record velocity history for counter-strafe detection.
+                    // Skip SourceTV/GOTV pawns: they float at world Z ~860 (well above
+                    // any playable surface), so Z > 500 is a reliable GOTV heuristic.
                     // Deduplicate by tick (only one sample per game tick).
-                    let current_tick = ctx.tick() as u32;
-                    let horiz_speed = (snap.vel_x.powi(2) + snap.vel_y.powi(2)).sqrt();
-                    let hist = self.pawn_vel_history.entry(idx).or_default();
-                    if hist.last().map(|(t, _)| *t) != Some(current_tick) {
-                        hist.push((current_tick, horiz_speed));
-                        // Cap history at 16 entries (~250 ms at 64 Hz — the pre-shot window)
-                        if hist.len() > 16 {
-                            hist.remove(0);
+                    if snap.z <= 500.0 {
+                        let current_tick = ctx.tick() as u32;
+                        let horiz_speed = (snap.vel_x.powi(2) + snap.vel_y.powi(2)).sqrt();
+                        let hist = self.pawn_vel_history.entry(idx).or_default();
+                        if hist.last().map(|(t, _)| *t) != Some(current_tick) {
+                            hist.push((current_tick, horiz_speed));
+                            // Cap history at 16 entries (~250 ms at 64 Hz — the pre-shot window)
+                            if hist.len() > 16 {
+                                hist.remove(0);
+                            }
                         }
                     }
                 }
