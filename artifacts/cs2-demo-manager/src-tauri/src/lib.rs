@@ -1953,26 +1953,31 @@ pub mod commands {
                         snap.eye_yaw   = get_f32(entity, "m_angEyeAngles[1]");
                     }
 
-                    // Velocity — in CS2 demos m_vecVelocity is only exposed as a vec3;
+                    // Velocity — in CS2 demos m_vecVelocity is ONLY exposed as a vec3;
                     // the indexed float variants ([0]/[1]/[2]) do NOT exist as separate
-                    // properties and silently return 0.0. Always read the vec3 first,
-                    // fall back to indexed floats only if the vec3 is all-zero.
+                    // properties and silently return 0.0.
+                    //
+                    // IMPORTANT: always assign vel_x/y/z every tick, even when zero.
+                    // The snapshot is reused across ticks (entry().or_default()), so a
+                    // conditional write would leave stale values when a player stops —
+                    // making a stationary shot appear as moving.
                     {
                         let vel3 = get_vec3(entity, "m_vecVelocity");
-                        if vel3[0] != 0.0 || vel3[1] != 0.0 || vel3[2] != 0.0 {
-                            snap.vel_x = vel3[0];
-                            snap.vel_y = vel3[1];
-                            snap.vel_z = vel3[2];
+                        // vec3 path: primary (CS2 default)
+                        // indexed float path: fallback for unusual demo formats
+                        let (vx, vy, vz) = if vel3[0] != 0.0 || vel3[1] != 0.0 || vel3[2] != 0.0 {
+                            (vel3[0], vel3[1], vel3[2])
                         } else {
-                            let vx = get_f32(entity, "m_vecVelocity[0]");
-                            let vy = get_f32(entity, "m_vecVelocity[1]");
-                            let vz = get_f32(entity, "m_vecVelocity[2]");
-                            if vx != 0.0 || vy != 0.0 || vz != 0.0 {
-                                snap.vel_x = vx;
-                                snap.vel_y = vy;
-                                snap.vel_z = vz;
-                            }
-                        }
+                            // Could still be (0,0,0) if the player is truly stationary —
+                            // that is the correct value and must be assigned.
+                            let fx = get_f32(entity, "m_vecVelocity[0]");
+                            let fy = get_f32(entity, "m_vecVelocity[1]");
+                            let fz = get_f32(entity, "m_vecVelocity[2]");
+                            (fx, fy, fz)
+                        };
+                        snap.vel_x = vx;
+                        snap.vel_y = vy;
+                        snap.vel_z = vz;
                     }
 
                     // Flash duration — always overwrite so it resets to 0 when flash expires.
