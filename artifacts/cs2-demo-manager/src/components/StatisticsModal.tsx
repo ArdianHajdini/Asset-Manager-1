@@ -159,8 +159,6 @@ function MapDiagram({
     const activeRadarSize = useUpper
       ? (radarInfo.radarSize ?? 1024)
       : (radarInfo.lowerRadarSize ?? radarInfo.radarSize ?? 1024);
-    const levelLabel = !useUpper ? " — lower" : "";
-
     // Corrected cs-demo-manager formula: scaledX = (worldX − posX) / scale × (SIZE / radarSize)
     const rx = (p: number[]) => (p[0] - activePosX) / activeScale * (SIZE / activeRadarSize);
     const ry = (p: number[]) => (activePosY - p[1]) / activeScale * (SIZE / activeRadarSize);
@@ -189,11 +187,23 @@ function MapDiagram({
 
     return (
       <div className="flex flex-col items-center gap-1.5">
-        {event.mapName && (
-          <p className="text-[9px] uppercase tracking-widest text-white/25 font-mono">
-            {event.mapName}{levelLabel}
-          </p>
-        )}
+        <div className="flex items-center gap-2">
+          {event.mapName && (
+            <p className="text-[9px] uppercase tracking-widest text-white/25 font-mono">
+              {event.mapName}
+            </p>
+          )}
+          {radarInfo.thresholdZ != null && (
+            <span className={cn(
+              "px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider",
+              useUpper
+                ? "bg-sky-500/15 text-sky-400/80"
+                : "bg-amber-500/15 text-amber-400/80"
+            )}>
+              {useUpper ? "Upper" : "Lower"}
+            </span>
+          )}
+        </div>
         <svg
           width={SIZE} height={SIZE}
           className="rounded-xl border border-white/10 overflow-hidden"
