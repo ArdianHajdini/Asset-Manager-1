@@ -143,11 +143,12 @@ function MapDiagram({
 
   // ── Real radar image path ──────────────────────────────────────
   if (radarUrl && radarInfo) {
-    // Multi-level map support: choose upper or lower radar based on player Z
-    const playerZ = playerPos[2];
+    // Radar level is always determined by the victim's position (the death/fight location),
+    // regardless of which player we're tracking, to correctly represent where the kill happened.
+    const fightZ = event.victimPos[2];
     const useUpper =
       !radarInfo.thresholdZ ||
-      playerZ >= radarInfo.thresholdZ ||
+      fightZ >= radarInfo.thresholdZ ||
       !lowerRadarUrl ||
       !radarInfo.lowerPosX;
 
@@ -168,6 +169,12 @@ function MapDiagram({
     const py = ry(playerPos);
     const ex = rx(enemyPos);
     const ey = ry(enemyPos);
+
+    // Assister position (if present)
+    const hasAssister = !!event.assisterName && (event.assisterPos[0] !== 0 || event.assisterPos[1] !== 0);
+    const ax = hasAssister ? rx(event.assisterPos) : 0;
+    const ay = hasAssister ? ry(event.assisterPos) : 0;
+    const assisterLabel = event.assisterName.slice(0, 9);
 
     const svgDist = Math.sqrt((px - ex) ** 2 + (py - ey) ** 2);
     const coneLen = Math.max(18, Math.min(55, svgDist * 0.7));
@@ -212,6 +219,21 @@ function MapDiagram({
             style={{ fontFamily: "monospace", filter: "drop-shadow(0 1px 2px #000)" }}>
             {enemyLabel}
           </text>
+
+          {/* Assister (purple dot, rendered when assister position is available) */}
+          {hasAssister && (
+            <>
+              <line x1={ax} y1={ay} x2={ex} y2={ey}
+                stroke="rgba(168,85,247,0.35)" strokeWidth="1" strokeDasharray="3 3" />
+              <circle cx={ax} cy={ay} r={6} fill="none" stroke="rgba(168,85,247,0.50)" strokeWidth="1.5" />
+              <circle cx={ax} cy={ay} r={3} fill="#a855f7" />
+              <text x={ax} y={ay - 9} textAnchor="middle"
+                fill="rgba(200,150,255,1)" fontSize={8} fontWeight="bold"
+                style={{ fontFamily: "monospace", filter: "drop-shadow(0 1px 2px #000)" }}>
+                {assisterLabel}
+              </text>
+            </>
+          )}
 
           {/* Player */}
           <circle cx={px} cy={py} r={9} fill="none"
@@ -484,6 +506,12 @@ function SummaryStats({ events }: { events: TauriDeathEvent[] }) {
     ? (kills.length / deaths.length).toFixed(2)
     : kills.length > 0 ? "∞" : "0.00";
 
+  // Average player speed across all events (killer speed for kills, victim speed for deaths)
+  const speedSamples = events.filter(e => e.hasPosData).map(e => e.playerIsKiller ? e.killerSpeed : e.victimSpeed);
+  const avgSpeed = speedSamples.length > 0
+    ? Math.round(speedSamples.reduce((s, v) => s + v, 0) / speedSamples.length)
+    : 0;
+
   // Top kill weapon
   const weaponMap: Record<string, number> = {};
   kills.forEach(e => { weaponMap[e.weapon] = (weaponMap[e.weapon] ?? 0) + 1; });
@@ -495,7 +523,7 @@ function SummaryStats({ events }: { events: TauriDeathEvent[] }) {
   const topKiller = Object.entries(killerMap).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—";
 
   return (
-    <div className="grid grid-cols-4 gap-2 px-5 py-3 border-b border-white/8 bg-white/[0.01] shrink-0">
+    <div className="grid grid-cols-5 gap-1.5 px-4 py-3 border-b border-white/8 bg-white/[0.01] shrink-0">
       <div className="flex flex-col items-center">
         <span className="text-[9px] text-white/25 uppercase tracking-wider">K / D</span>
         <span className="text-sm font-bold text-white/75">{kills.length}/{deaths.length}</span>
@@ -506,14 +534,19 @@ function SummaryStats({ events }: { events: TauriDeathEvent[] }) {
         <span className="text-sm font-bold text-white/75">{hsPercent}%</span>
         <span className="text-[9px] text-white/25 font-mono">{hs} hs</span>
       </div>
+      <div className="flex flex-col items-center">
+        <span className="text-[9px] text-white/25 uppercase tracking-wider">Avg Spd</span>
+        <span className="text-sm font-bold text-white/75">{avgSpeed}</span>
+        <span className="text-[9px] text-white/25 font-mono">u/s</span>
+      </div>
       <div className="flex flex-col items-center overflow-hidden">
-        <span className="text-[9px] text-white/25 uppercase tracking-wider">Top Weapon</span>
+        <span className="text-[9px] text-white/25 uppercase tracking-wider">Top Gun</span>
         <span className="text-xs font-bold text-white/75 truncate max-w-full text-center">{topWeapon}</span>
       </div>
       <div className="flex flex-col items-center overflow-hidden">
         <span className="text-[9px] text-white/25 uppercase tracking-wider">Top Killer</span>
         <span className="text-xs font-bold text-white/75 truncate max-w-full text-center" title={topKiller}>
-          {topKiller.slice(0, 10)}
+          {topKiller.slice(0, 9)}
         </span>
       </div>
     </div>
