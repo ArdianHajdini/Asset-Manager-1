@@ -219,6 +219,36 @@ export async function tauriValidateLicense(
 }
 
 // ─────────────────────────────────────────
+//  Map Radar
+// ─────────────────────────────────────────
+
+/**
+ * CS2 map radar metadata loaded from the local CS2 installation.
+ * posX / posY: world-space coordinates of the top-left corner of the 1024×1024 radar image.
+ * scale: world units per pixel.
+ * Coordinate transform: radarX = (worldX - posX) / scale, radarY = (posY - worldY) / scale
+ */
+export interface MapRadarInfo {
+  radarPath: string;
+  posX: number;
+  posY: number;
+  scale: number;
+}
+
+/**
+ * Load map radar metadata from the CS2 installation.
+ * steamPath: the Steam root folder (from settings.steamPath).
+ * mapName: e.g. "de_mirage"
+ */
+export async function tauriGetMapRadarInfo(
+  steamPath: string,
+  mapName: string,
+): Promise<MapRadarInfo> {
+  const invoke = await getInvoke();
+  return invoke<MapRadarInfo>("get_map_radar_info", { steamPath, mapName });
+}
+
+// ─────────────────────────────────────────
 //  Death / Statistics Analysis
 // ─────────────────────────────────────────
 

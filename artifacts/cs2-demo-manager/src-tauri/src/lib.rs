@@ -38,6 +38,20 @@ pub struct LicenseValidateResult {
     pub offline: bool,
 }
 
+/// Map overview metadata loaded from the CS2 installation.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MapRadarInfo {
+    /// Absolute path to <map>_radar.png
+    pub radar_path: String,
+    /// World X coordinate of the top-left corner of the radar image
+    pub pos_x: f32,
+    /// World Y coordinate of the top-left corner of the radar image
+    pub pos_y: f32,
+    /// World units per pixel of the 1024×1024 radar image
+    pub scale: f32,
+}
+
 /// A single death event for the local player, returned by parse_demo_deaths.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DemoDeathEvent {
@@ -2195,6 +2209,71 @@ pub mod commands {
         Ok(obs.deaths.clone())
     }
 
+    /// Parse a Valve KeyValues .txt file and extract pos_x, pos_y, scale.
+    /// Line format: \t"key"\t"value"
+    fn parse_overview_kv(content: &str) -> Option<(f32, f32, f32)> {
+        let mut pos_x: Option<f32> = None;
+        let mut pos_y: Option<f32> = None;
+        let mut scale: Option<f32> = None;
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split('"').collect();
+            if parts.len() >= 4 {
+                let key = parts[1];
+                let value = parts[3];
+                match key {
+                    "pos_x" => pos_x = value.parse().ok(),
+                    "pos_y" => pos_y = value.parse().ok(),
+                    "scale" => scale = value.parse().ok(),
+                    _ => {}
+                }
+            }
+        }
+        Some((pos_x?, pos_y?, scale?))
+    }
+
+    /// Load CS2 map radar metadata from the local CS2 installation.
+    ///
+    /// Returns the absolute path to the radar PNG and the coordinate transform
+    /// values needed to project world-space positions onto the 1024×1024 image:
+    ///   radar_x = (world_x - pos_x) / scale
+    ///   radar_y = (pos_y  - world_y) / scale
+    #[tauri::command]
+    pub fn get_map_radar_info(
+        steam_path: String,
+        map_name: String,
+    ) -> Result<super::MapRadarInfo, String> {
+        let overviews = PathBuf::from(&steam_path)
+            .join("steamapps")
+            .join("common")
+            .join("Counter-Strike Global Offensive")
+            .join("game")
+            .join("csgo")
+            .join("resource")
+            .join("overviews");
+
+        let txt_path = overviews.join(format!("{}.txt", map_name));
+        let content = fs::read_to_string(&txt_path)
+            .map_err(|e| format!("Cannot read overview for {}: {}", map_name, e))?;
+
+        let (pos_x, pos_y, scale) = parse_overview_kv(&content)
+            .ok_or_else(|| format!("Failed to parse pos_x/pos_y/scale from {}.txt", map_name))?;
+
+        let radar_path = overviews.join(format!("{}_radar.png", map_name));
+        if !radar_path.exists() {
+            return Err(format!(
+                "Radar image not found: {}",
+                radar_path.display()
+            ));
+        }
+
+        Ok(super::MapRadarInfo {
+            radar_path: radar_path.to_string_lossy().to_string(),
+            pos_x,
+            pos_y,
+            scale,
+        })
+    }
+
 }
 
 // ─────────────────────────────────────────
@@ -2225,6 +2304,7 @@ pub fn run() {
             commands::validate_license_stored,
             commands::parse_demo_deaths,
             commands::probe_pawn_properties,
+            commands::get_map_radar_info,
         ])
         .run(tauri::generate_context!())
         .expect("Fehler beim Starten der Anwendung");
