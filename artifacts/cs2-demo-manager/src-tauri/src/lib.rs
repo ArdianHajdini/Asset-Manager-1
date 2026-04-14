@@ -134,6 +134,20 @@ pub struct DemoDeathEvent {
     /// True if victim was moving (speed > 10) at death
     #[serde(rename = "shotBeforeStop")]
     pub shot_before_stop: bool,
+    /// Killer's horizontal speed (units/s) at the tick of the killing shot.
+    /// 0.0 if weapon_fire was not captured in time before death.
+    #[serde(rename = "killerSpeedAtShot")]
+    pub killer_speed_at_shot: f32,
+    /// Counter-strafe quality score 0.0–1.0 for the killing shot.
+    /// Based on how much the killer's speed dropped between the pre-shot window
+    /// (ticks -15 to -3 before shot) and the shot tick itself.
+    /// -1.0 = not applicable (killer was already stationary before the shot).
+    #[serde(rename = "counterStrafeScore")]
+    pub counter_strafe_score: f32,
+    /// True if the killer was moving at speed > 50 u/s in the 15 ticks before
+    /// the killing shot (i.e. counter-strafing was relevant / attempted).
+    #[serde(rename = "wasMovingBeforeShot")]
+    pub was_moving_before_shot: bool,
     /// True if position data was successfully extracted from entities
     #[serde(rename = "hasPosData")]
     pub has_pos_data: bool,
@@ -1724,6 +1738,17 @@ pub mod commands {
             pub flash_duration: f32,
         }
 
+        /// Data recorded at the tick a player fires a shot.
+        struct WeaponFireInfo {
+            tick: u32,
+            /// Horizontal speed (u/s) at the exact moment the trigger was pulled.
+            speed_at_shot: f32,
+            /// 0.0–1.0 counter-strafe quality; -1.0 = not applicable (was stationary).
+            counter_strafe_score: f32,
+            /// True if the player was moving (> 50 u/s) in the window before the shot.
+            was_moving_before: bool,
+        }
+
         pub struct DeathObserver {
             pub deaths: Vec<super::super::DemoDeathEvent>,
             /// controller entity_index → pawn entity_index (from m_hPlayerPawn)
@@ -1742,6 +1767,11 @@ pub mod commands {
             pub target_player_name: String,
             /// controller entity_index → tick of their most recent kill (for trade detection)
             pub last_kill_tick: HashMap<u32, u32>,
+            /// pawn entity_index → recent (tick, horizontal_speed) samples.
+            /// Updated every entity tick; capped at 32 entries.
+            pub pawn_vel_history: HashMap<u32, Vec<(u32, f32)>>,
+            /// controller entity_index → info from their most recent weapon_fire event.
+            pub last_weapon_fire: HashMap<u32, WeaponFireInfo>,
             /// how many controllers we have logged via eprintln (capped at 3)
             pub dbg_ctrl_seen: u32,
             /// how many pawns we have logged via eprintln (capped at 3)
@@ -1760,6 +1790,8 @@ pub mod commands {
                     map_name: String::new(),
                     target_player_name: String::new(),
                     last_kill_tick: HashMap::new(),
+                    pawn_vel_history: HashMap::new(),
+                    last_weapon_fire: HashMap::new(),
                     dbg_ctrl_seen: 0,
                     dbg_pawn_seen: 0,
                 }
@@ -1841,7 +1873,7 @@ pub mod commands {
         #[uses_game_events]
         impl DeathObserver {
             #[on_entity]
-            fn handle_entity(&mut self, _ctx: &Context, entity: &Entity) -> ObserverResult {
+            fn handle_entity(&mut self, ctx: &Context, entity: &Entity) -> ObserverResult {
                 let class = entity.class().name();
                 let idx = entity.index();
 
@@ -1923,6 +1955,19 @@ pub mod commands {
 
                     // Flash duration — always overwrite so it resets to 0 when flash expires.
                     snap.flash_duration = get_f32(entity, "m_flFlashDuration");
+
+                    // Record velocity history for counter-strafe detection.
+                    // Deduplicate by tick (only one sample per game tick).
+                    let current_tick = ctx.tick() as u32;
+                    let horiz_speed = (snap.vel_x.powi(2) + snap.vel_y.powi(2)).sqrt();
+                    let hist = self.pawn_vel_history.entry(idx).or_default();
+                    if hist.last().map(|(t, _)| *t) != Some(current_tick) {
+                        hist.push((current_tick, horiz_speed));
+                        // Cap history at 32 entries (~0.5 s at 64 Hz)
+                        if hist.len() > 32 {
+                            hist.remove(0);
+                        }
+                    }
                 }
 
                 Ok(())
@@ -1933,6 +1978,69 @@ pub mod commands {
                 match event.name() {
                     "round_start" => {
                         self.current_round += 1;
+                    }
+                    "weapon_fire" => {
+                        // Track the shooter's velocity at the exact moment they fired.
+                        // We look up their velocity history to compute counter-strafe quality.
+                        let raw_userid: i32 = event
+                            .get_value("userid")
+                            .ok()
+                            .and_then(|v| TryInto::<i32>::try_into(v).ok())
+                            .unwrap_or(0);
+                        let shooter_ctrl = (raw_userid as u32) & 0x3FFF;
+                        let fire_tick = ctx.tick() as u32;
+
+                        if let Some(&pawn_idx) = self.ctrl_to_pawn.get(&shooter_ctrl) {
+                            if let Some(snap) = self.pawn_snapshots.get(&pawn_idx) {
+                                let speed_at_shot = (snap.vel_x.powi(2) + snap.vel_y.powi(2)).sqrt();
+
+                                // Gather pre-shot velocity samples (ticks 3–20 before shot).
+                                let pre_speeds: Vec<f32> = self.pawn_vel_history
+                                    .get(&pawn_idx)
+                                    .map(|hist| {
+                                        hist.iter()
+                                            .filter(|(t, _)| {
+                                                let diff = fire_tick.saturating_sub(*t);
+                                                diff >= 3 && diff <= 20
+                                            })
+                                            .map(|(_, s)| *s)
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+
+                                let max_pre_speed = pre_speeds.iter().cloned().fold(0.0_f32, f32::max);
+
+                                // Counter-strafe score:
+                                //  -1.0 → player was already stationary (not relevant)
+                                //   0.0 → sprinting at shot
+                                //   1.0 → perfect stop before shot
+                                let (counter_strafe_score, was_moving_before) =
+                                    if max_pre_speed < 50.0 {
+                                        // Player was barely moving before the shot — not relevant
+                                        (-1.0_f32, false)
+                                    } else {
+                                        let score = if speed_at_shot < 10.0 {
+                                            1.0
+                                        } else if speed_at_shot < 30.0 {
+                                            0.80
+                                        } else if speed_at_shot < 80.0 {
+                                            0.50
+                                        } else if speed_at_shot < 150.0 {
+                                            0.25
+                                        } else {
+                                            0.0
+                                        };
+                                        (score, true)
+                                    };
+
+                                self.last_weapon_fire.insert(shooter_ctrl, WeaponFireInfo {
+                                    tick: fire_tick,
+                                    speed_at_shot,
+                                    counter_strafe_score,
+                                    was_moving_before,
+                                });
+                            }
+                        }
                     }
                     "player_death" => {
                         let weapon: String = event
@@ -2064,13 +2172,29 @@ pub mod commands {
                         let victim_speed = (victim_snap.vel_x.powi(2) + victim_snap.vel_y.powi(2)).sqrt();
                         let killer_speed = (killer_snap.vel_x.powi(2) + killer_snap.vel_y.powi(2)).sqrt();
 
+                        // Look up the killer's last weapon_fire event.
+                        // Use the data only when it's within 128 ticks (~2 s) of this death tick,
+                        // so it actually corresponds to the killing shot and not an earlier shot.
+                        let tick_now = ctx.tick() as u32;
+                        let (killer_speed_at_shot, counter_strafe_score, was_moving_before_shot) =
+                            if let Some(wf) = self.last_weapon_fire.get(&killer_ctrl) {
+                                if tick_now.saturating_sub(wf.tick) <= 128 {
+                                    (wf.speed_at_shot, wf.counter_strafe_score, wf.was_moving_before)
+                                } else {
+                                    // weapon_fire too old — fall back to current killer speed
+                                    (killer_speed, -1.0_f32, false)
+                                }
+                            } else {
+                                (killer_speed, -1.0_f32, false)
+                            };
+
                         // Airborne: vertical speed > 100 u/s heuristic (CS2 vel_z > 0 while jumping)
                         let is_victim_airborne = victim_snap.vel_z.abs() > 100.0;
 
                         // Victim blinded: non-zero flash duration in entity state
                         let is_victim_blinded = victim_snap.flash_duration > 0.0;
 
-                        let tick = ctx.tick() as u32;
+                        let tick = tick_now;
                         let time_seconds = tick as f32 / 64.0;
 
                         // Trade kill: victim made a kill within ~5 s (320 ticks at 64 Hz) before dying
@@ -2142,6 +2266,9 @@ pub mod commands {
                             crosshair_error_deg,
                             was_enemy_in_fov,
                             shot_before_stop: victim_speed > 10.0,
+                            killer_speed_at_shot,
+                            counter_strafe_score,
+                            was_moving_before_shot,
                             has_pos_data,
                             player_is_killer,
                             map_name: self.map_name.clone(),

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   X, Skull, Crosshair, Eye, Gauge, Footprints,
-  Users, Loader2, Target, ChevronDown,
+  Users, Loader2, Target,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TauriDeathEvent, TauriDemoPlayer, MapRadarInfo } from "../services/tauriBridge";
@@ -65,13 +65,47 @@ function getExplanation(d: TauriDeathEvent): { text: string; color: string } {
     }
   }
 
-  if (d.shotBeforeStop) {
-    parts.push(isKill ? "Enemy was moving when shot." : "You were still moving when shot — affected your accuracy.");
+  // Counter-strafe & shot speed analysis (key CS2 mechanic)
+  if (isKill) {
+    // Focus on YOUR movement discipline when you shot
+    if (d.wasMovingBeforeShot) {
+      if (d.counterStrafeScore >= 0.9) {
+        parts.push(`Perfect counter-strafe — you were nearly still (${Math.round(d.killerSpeedAtShot)} u/s) when you fired.`);
+      } else if (d.counterStrafeScore >= 0.7) {
+        parts.push(`Good counter-strafe — speed dropped to ${Math.round(d.killerSpeedAtShot)} u/s at the shot.`);
+      } else if (d.counterStrafeScore >= 0.4) {
+        parts.push(`Partial counter-strafe — still at ${Math.round(d.killerSpeedAtShot)} u/s when you fired; some accuracy penalty.`);
+      } else {
+        parts.push(`No counter-strafe — you were moving at ${Math.round(d.killerSpeedAtShot)} u/s when you shot; movement inaccuracy applied.`);
+      }
+    } else if (d.killerSpeedAtShot < 10) {
+      parts.push("You were stationary when you fired — full accuracy.");
+    } else {
+      parts.push(`You were moving at ${Math.round(d.killerSpeedAtShot)} u/s when you fired.`);
+    }
+    if (d.shotBeforeStop) {
+      parts.push("Enemy was moving when killed.");
+    }
   } else {
-    parts.push(isKill ? "Enemy was stationary." : "You were stationary — good positioning discipline.");
+    // Death — focus on enemy's movement when they shot you
+    if (d.wasMovingBeforeShot) {
+      if (d.counterStrafeScore >= 0.9) {
+        parts.push(`Enemy counter-strafed perfectly — they were nearly still (${Math.round(d.killerSpeedAtShot)} u/s) when they fired.`);
+      } else if (d.counterStrafeScore >= 0.4) {
+        parts.push(`Enemy partially counter-strafed, firing at ${Math.round(d.killerSpeedAtShot)} u/s.`);
+      } else {
+        parts.push(`Enemy was running at ${Math.round(d.killerSpeedAtShot)} u/s when they shot — they got lucky or used movement.`);
+      }
+    } else if (d.killerSpeedAtShot < 10) {
+      parts.push("Enemy was stationary when they fired — full accuracy.");
+    }
+    if (d.shotBeforeStop) {
+      parts.push("You were still moving when you died — check your positioning.");
+    } else {
+      parts.push("You were stationary — check your crosshair placement and timing.");
+    }
   }
 
-  // Extra context from enriched event data
   if (d.penetratedObjects > 0) {
     parts.push(isKill ? `Wallbang through ${d.penetratedObjects} surface(s).` : `You were wallbanged through ${d.penetratedObjects} surface(s).`);
   }
@@ -362,55 +396,77 @@ function MetricBadge({ label, value, color, icon }: {
 }
 
 // ─────────────────────────────────────────
+//  Counter-strafe score → label + color
+// ─────────────────────────────────────────
+
+function csInfo(score: number, wasMoving: boolean): { label: string; color: string; bar: number } {
+  if (!wasMoving) return { label: "Stationary", color: "text-white/30", bar: 0 };
+  if (score < 0)  return { label: "—",          color: "text-white/25", bar: 0 };
+  if (score >= 0.9) return { label: "Perfect ✓", color: "text-emerald-400", bar: 1.0 };
+  if (score >= 0.7) return { label: "Good",       color: "text-lime-400",    bar: 0.75 };
+  if (score >= 0.4) return { label: "Partial",    color: "text-yellow-400",  bar: 0.50 };
+  if (score >= 0.1) return { label: "Poor",       color: "text-orange-400",  bar: 0.25 };
+  return               { label: "Moving",      color: "text-red-400",     bar: 0.05 };
+}
+
+// ─────────────────────────────────────────
+//  Speed value → color band
+// ─────────────────────────────────────────
+
+function speedColor(spd: number) {
+  if (spd < 10)  return "text-emerald-400";
+  if (spd < 30)  return "text-lime-400";
+  if (spd < 80)  return "text-yellow-400";
+  if (spd < 150) return "text-orange-400";
+  return "text-red-400";
+}
+
+// ─────────────────────────────────────────
 //  Per-event card (kill or death)
 // ─────────────────────────────────────────
 
-function EventCard({ event, radarUrl, radarInfo, lowerRadarUrl, t }: {
+function EventCard({ event, t }: {
   event: TauriDeathEvent;
-  radarUrl: string | null;
-  radarInfo: MapRadarInfo | null;
-  lowerRadarUrl?: string | null;
   t: (key: string) => string;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const isKill = event.playerIsKiller;
   const explanation = getExplanation(event);
   const opponentName = isKill ? event.victimName : event.killerName;
 
-  const crosshairColor = !event.hasPosData ? "text-white/20"
+  // The killing shot always belongs to the attacker.
+  // For kills → "you"; for deaths → "them".
+  const shotSpd  = Math.round(event.killerSpeedAtShot);
+  const cs       = csInfo(event.counterStrafeScore, event.wasMovingBeforeShot);
+
+  // Enemy movement (opposite side of the fight)
+  const enemySpd = isKill ? Math.round(event.victimSpeed) : Math.round(event.killerSpeed);
+  const enemySpdColor = speedColor(enemySpd);
+
+  const crosshairCol = !event.hasPosData ? "text-white/20"
     : event.crosshairErrorDeg < 10 ? "text-green-400"
     : event.crosshairErrorDeg < 25 ? "text-yellow-400"
-    : "text-red-400";
-
-  const speedVal = isKill ? event.killerSpeed : event.victimSpeed;
-  const speedColor = speedVal < 10 ? "text-green-400"
-    : speedVal < 60 ? "text-yellow-400"
     : "text-red-400";
 
   const headerBg = isKill
     ? "bg-emerald-950/30 border-emerald-500/10"
     : "bg-red-950/20 border-red-500/8";
 
-  // Badge pills shown in the event header
   const badges: { label: string; cls: string }[] = [];
-  if (event.headshot) badges.push({ label: "HS", cls: "bg-red-500/20 text-red-400" });
+  if (event.headshot)          badges.push({ label: "HS",                   cls: "bg-red-500/20 text-red-400" });
   if (event.penetratedObjects > 0) badges.push({ label: `🧱×${event.penetratedObjects}`, cls: "bg-orange-500/20 text-orange-400" });
-  if (event.isTradeKill) badges.push({ label: "⚖️ Trade", cls: "bg-purple-500/20 text-purple-300" });
-  if (isKill && event.isKillerAirborne) badges.push({ label: "✈️ Air", cls: "bg-sky-500/20 text-sky-300" });
-  if (!isKill && event.isVictimAirborne) badges.push({ label: "✈️ Airborne", cls: "bg-sky-500/20 text-sky-300" });
-  if (isKill && event.isKillerBlinded) badges.push({ label: "👁️ Blinded", cls: "bg-yellow-500/20 text-yellow-300" });
-  if (!isKill && event.isVictimBlinded) badges.push({ label: "👁️ Flashed", cls: "bg-yellow-500/20 text-yellow-300" });
+  if (event.isTradeKill)       badges.push({ label: "⚖️ Trade",             cls: "bg-purple-500/20 text-purple-300" });
+  if (isKill  && event.isKillerAirborne) badges.push({ label: "✈️ Air",     cls: "bg-sky-500/20 text-sky-300" });
+  if (!isKill && event.isVictimAirborne) badges.push({ label: "✈️ Airborne",cls: "bg-sky-500/20 text-sky-300" });
+  if (isKill  && event.isKillerBlinded)  badges.push({ label: "👁️ Blinded", cls: "bg-yellow-500/20 text-yellow-300" });
+  if (!isKill && event.isVictimBlinded)  badges.push({ label: "👁️ Flashed", cls: "bg-yellow-500/20 text-yellow-300" });
 
   return (
     <div className="rounded-xl border border-white/8 bg-white/2 overflow-hidden">
-      {/* Header — click to expand/collapse radar */}
-      <button
-        onClick={() => setExpanded(v => !v)}
-        className={cn(
-          "w-full flex items-center gap-2.5 px-4 py-3 border-b border-white/6 text-left transition-all hover:bg-white/2",
-          headerBg
-        )}
-      >
+      {/* Header */}
+      <div className={cn(
+        "flex items-center gap-2.5 px-4 py-3 border-b border-white/6",
+        headerBg
+      )}>
         <span className="shrink-0 w-7 h-7 rounded-lg bg-white/8 flex items-center justify-center text-[11px] font-bold text-white/50">
           R{event.round}
         </span>
@@ -444,19 +500,77 @@ function EventCard({ event, radarUrl, radarInfo, lowerRadarUrl, t }: {
             )}
           </div>
         </div>
-        <ChevronDown className={cn(
-          "w-3.5 h-3.5 text-white/20 transition-transform shrink-0",
-          expanded && "rotate-180"
-        )} />
-      </button>
+      </div>
 
-      {/* Metrics — always visible */}
-      <div className="p-3 space-y-3">
-        <div className="grid grid-cols-4 gap-1.5">
+      {/* Core metrics */}
+      <div className="p-3 space-y-2.5">
+
+        {/* ── Counter-strafe + speed panel (primary skill metrics) ── */}
+        <div className="rounded-lg border border-white/6 bg-white/[0.02] p-2.5 space-y-2">
+          {/* Shot speed row */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <Gauge className="w-3 h-3 text-white/30 shrink-0" />
+              <span className="text-[10px] text-white/35 uppercase tracking-wider">
+                {isKill ? "your shot speed" : "enemy shot speed"}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className={cn("text-sm font-bold tabular-nums", speedColor(shotSpd))}>
+                {event.hasPosData ? shotSpd : "–"}
+              </span>
+              <span className="text-[9px] text-white/20 font-mono">u/s</span>
+              {event.hasPosData && (
+                <span className={cn("text-[9px] px-1 py-0.5 rounded font-semibold",
+                  shotSpd < 10  ? "bg-emerald-500/15 text-emerald-400" :
+                  shotSpd < 30  ? "bg-lime-500/15 text-lime-400"       :
+                  shotSpd < 80  ? "bg-yellow-500/15 text-yellow-400"   :
+                  shotSpd < 150 ? "bg-orange-500/15 text-orange-400"   :
+                                  "bg-red-500/15 text-red-400"
+                )}>
+                  {shotSpd < 10 ? "Still" : shotSpd < 30 ? "Slow" : shotSpd < 80 ? "Moving" : shotSpd < 150 ? "Running" : "Sprint"}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Counter-strafe row — shown when the shot involved prior movement */}
+          {event.hasPosData && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Footprints className="w-3 h-3 text-white/30 shrink-0" />
+                  <span className="text-[10px] text-white/35 uppercase tracking-wider">
+                    {isKill ? "your counter-strafe" : "enemy counter-strafe"}
+                  </span>
+                </div>
+                <span className={cn("text-[11px] font-bold", cs.color)}>{cs.label}</span>
+              </div>
+              {/* Visual quality bar — only shown when moving before shot */}
+              {event.wasMovingBeforeShot && event.counterStrafeScore >= 0 && (
+                <div className="h-1 rounded-full bg-white/8 overflow-hidden">
+                  <div
+                    className={cn(
+                      "h-full rounded-full transition-all",
+                      cs.bar >= 0.9 ? "bg-emerald-500" :
+                      cs.bar >= 0.7 ? "bg-lime-500"    :
+                      cs.bar >= 0.4 ? "bg-yellow-500"  :
+                      cs.bar >= 0.2 ? "bg-orange-500"  : "bg-red-500"
+                    )}
+                    style={{ width: `${cs.bar * 100}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Secondary metrics: crosshair + enemy speed */}
+        <div className="grid grid-cols-3 gap-1.5">
           <MetricBadge
             label={t("stats.crosshairError")}
             value={event.hasPosData ? `${event.crosshairErrorDeg.toFixed(1)}°` : "–"}
-            color={crosshairColor}
+            color={crosshairCol}
             icon={<Crosshair className="w-2.5 h-2.5" />}
           />
           <MetricBadge
@@ -466,19 +580,10 @@ function EventCard({ event, radarUrl, radarInfo, lowerRadarUrl, t }: {
             icon={<Eye className="w-2.5 h-2.5" />}
           />
           <MetricBadge
-            label={isKill ? "my speed" : t("stats.speed")}
-            value={event.hasPosData ? `${Math.round(speedVal)}` : "–"}
-            color={event.hasPosData ? speedColor : "text-white/20"}
+            label={isKill ? "enemy speed" : "your speed"}
+            value={event.hasPosData ? `${enemySpd}` : "–"}
+            color={event.hasPosData ? enemySpdColor : "text-white/20"}
             icon={<Gauge className="w-2.5 h-2.5" />}
-          />
-          <MetricBadge
-            label={isKill ? "moving" : t("stats.shotBeforeStop")}
-            value={!event.hasPosData ? "–" : event.shotBeforeStop ? t("stats.yes") : t("stats.no")}
-            color={!event.hasPosData ? "text-white/20"
-              : isKill
-                ? (event.shotBeforeStop ? "text-yellow-400" : "text-white/40")
-                : (event.shotBeforeStop ? "text-red-400"   : "text-green-400")}
-            icon={<Footprints className="w-2.5 h-2.5" />}
           />
         </div>
 
@@ -492,11 +597,6 @@ function EventCard({ event, radarUrl, radarInfo, lowerRadarUrl, t }: {
             : <Skull  className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
           <p className="text-xs leading-snug">{explanation.text}</p>
         </div>
-
-        {/* Radar map — shown when card is expanded */}
-        {expanded && event.hasPosData && (
-          <MapDiagram event={event} radarUrl={radarUrl} radarInfo={radarInfo} lowerRadarUrl={lowerRadarUrl} />
-        )}
       </div>
     </div>
   );
@@ -516,11 +616,18 @@ function SummaryStats({ events }: { events: TauriDeathEvent[] }) {
     ? (kills.length / deaths.length).toFixed(2)
     : kills.length > 0 ? "∞" : "0.00";
 
-  // Average victim speed across death events (how fast the player was moving when they died)
-  const deathSpeeds = deaths.filter(e => e.hasPosData).map(e => e.victimSpeed);
-  const avgSpeed = deathSpeeds.length > 0
-    ? Math.round(deathSpeeds.reduce((s, v) => s + v, 0) / deathSpeeds.length)
-    : 0;
+  // Average shot speed for kills (you were the attacker)
+  const killShotSpeeds = kills.filter(e => e.hasPosData && e.killerSpeedAtShot >= 0).map(e => e.killerSpeedAtShot);
+  const avgKillShotSpd = killShotSpeeds.length > 0
+    ? Math.round(killShotSpeeds.reduce((s, v) => s + v, 0) / killShotSpeeds.length)
+    : null;
+
+  // Counter-strafe quality: kills where you were moving before the shot
+  const relevantKills = kills.filter(e => e.hasPosData && e.wasMovingBeforeShot);
+  const goodCsKills   = relevantKills.filter(e => e.counterStrafeScore >= 0.7);
+  const csPercent = relevantKills.length > 0
+    ? Math.round(goodCsKills.length / relevantKills.length * 100)
+    : null;
 
   // Top kill weapon
   const weaponMap: Record<string, number> = {};
@@ -531,6 +638,18 @@ function SummaryStats({ events }: { events: TauriDeathEvent[] }) {
   const killerMap: Record<string, number> = {};
   deaths.forEach(e => { killerMap[e.killerName] = (killerMap[e.killerName] ?? 0) + 1; });
   const topKiller = Object.entries(killerMap).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—";
+
+  const csColor = csPercent == null ? "text-white/40"
+    : csPercent >= 75 ? "text-emerald-400"
+    : csPercent >= 50 ? "text-lime-400"
+    : csPercent >= 30 ? "text-yellow-400"
+    : "text-red-400";
+
+  const spdColor = avgKillShotSpd == null ? "text-white/40"
+    : avgKillShotSpd < 15  ? "text-emerald-400"
+    : avgKillShotSpd < 40  ? "text-lime-400"
+    : avgKillShotSpd < 100 ? "text-yellow-400"
+    : "text-red-400";
 
   return (
     <div className="grid grid-cols-5 gap-1.5 px-4 py-3 border-b border-white/8 bg-white/[0.01] shrink-0">
@@ -545,18 +664,24 @@ function SummaryStats({ events }: { events: TauriDeathEvent[] }) {
         <span className="text-[9px] text-white/25 font-mono">{hs} hs</span>
       </div>
       <div className="flex flex-col items-center">
-        <span className="text-[9px] text-white/25 uppercase tracking-wider">Avg Spd</span>
-        <span className="text-sm font-bold text-white/75">{avgSpeed}</span>
-        <span className="text-[9px] text-white/25 font-mono">u/s</span>
+        <span className="text-[9px] text-white/25 uppercase tracking-wider">Shot Spd</span>
+        <span className={cn("text-sm font-bold", spdColor)}>
+          {avgKillShotSpd != null ? avgKillShotSpd : "—"}
+        </span>
+        <span className="text-[9px] text-white/25 font-mono">avg u/s</span>
+      </div>
+      <div className="flex flex-col items-center">
+        <span className="text-[9px] text-white/25 uppercase tracking-wider">Ctr-Strafe</span>
+        <span className={cn("text-sm font-bold", csColor)}>
+          {csPercent != null ? `${csPercent}%` : "—"}
+        </span>
+        <span className="text-[9px] text-white/25 font-mono">{goodCsKills.length}/{relevantKills.length}</span>
       </div>
       <div className="flex flex-col items-center overflow-hidden">
         <span className="text-[9px] text-white/25 uppercase tracking-wider">Top Gun</span>
         <span className="text-xs font-bold text-white/75 truncate max-w-full text-center">{topWeapon}</span>
-      </div>
-      <div className="flex flex-col items-center overflow-hidden">
-        <span className="text-[9px] text-white/25 uppercase tracking-wider">Top Killer</span>
-        <span className="text-xs font-bold text-white/75 truncate max-w-full text-center" title={topKiller}>
-          {topKiller.slice(0, 9)}
+        <span className="text-[9px] text-white/25 overflow-hidden text-ellipsis max-w-full text-center" title={topKiller}>
+          {topKiller.slice(0, 8)}
         </span>
       </div>
     </div>
@@ -905,9 +1030,6 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
                   <EventCard
                     key={i}
                     event={event}
-                    radarUrl={radarUrl}
-                    radarInfo={radarInfo}
-                    lowerRadarUrl={lowerRadarUrl}
                     t={t}
                   />
                 ))
