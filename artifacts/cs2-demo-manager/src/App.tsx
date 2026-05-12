@@ -13,6 +13,7 @@ import {
   validateLicenseOnline,
   clearStoredLicense,
 } from "./services/licenseService";
+import { isTauri } from "./services/tauriBridge";
 import "./i18n/index";
 
 const queryClient = new QueryClient();
@@ -50,6 +51,13 @@ function App() {
 
   useEffect(() => {
     async function checkLicense() {
+      // Browser/dev mode: skip license entirely. The Tauri desktop build
+      // is the actual product and still enforces licensing.
+      if (!isTauri()) {
+        setLicensed(true);
+        return;
+      }
+
       const status = getLicenseStatus();
 
       if (status === "unlicensed") {

@@ -163,6 +163,102 @@ pub struct DemoDeathEvent {
     pub debug_info: String,
 }
 
+// ── Stats scoreboard (Awpy-style, keyed by SteamID) ────────────────────────
+
+/// Per-player aggregate scoreboard row, computed by parse_demo_stats.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerStats {
+    pub steam_id: String,
+    pub name: String,
+    /// Last-seen team number: 2 = T, 3 = CT, 0 = unassigned/spectator.
+    pub team_num: u8,
+    pub kills: u32,
+    pub deaths: u32,
+    pub assists: u32,
+    pub headshot_kills: u32,
+    /// Total damage dealt (capped at remaining victim HP — Awpy convention).
+    pub damage_dealt: u32,
+    /// Damage from grenades (he/molotov/incendiary/inferno).
+    pub utility_damage: u32,
+    /// Number of rounds the player participated in (was on a team during the round).
+    pub rounds_played: u32,
+    /// Rounds where the player got K, A, S, or T (used for KAST%).
+    pub kast_rounds: u32,
+    /// First-kill of round counts (where this player was the killer / victim).
+    pub entry_kills: u32,
+    pub entry_deaths: u32,
+    /// Per-side splits (team at the tick of each event).
+    pub t_kills: u32,
+    pub t_deaths: u32,
+    pub t_damage: u32,
+    pub t_rounds: u32,
+    pub ct_kills: u32,
+    pub ct_deaths: u32,
+    pub ct_damage: u32,
+    pub ct_rounds: u32,
+}
+
+/// One row in the raw kills table (debug export).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsKillRow {
+    pub round: u32,
+    pub tick: u32,
+    pub killer_id: String,
+    pub victim_id: String,
+    pub assister_id: String,
+    pub weapon: String,
+    pub headshot: bool,
+    pub killer_team: u8,
+    pub victim_team: u8,
+    pub is_entry: bool,
+    pub is_trade: bool,
+}
+
+/// One row in the raw damages table (debug export).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsDamageRow {
+    pub round: u32,
+    pub tick: u32,
+    pub attacker_id: String,
+    pub victim_id: String,
+    pub weapon: String,
+    pub damage: u32,
+    pub hitgroup: u8,
+    pub attacker_team: u8,
+    pub is_utility: bool,
+}
+
+/// One row in the raw rounds table (debug export).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StatsRoundRow {
+    pub round: u32,
+    pub start_tick: u32,
+    pub end_tick: u32,
+    /// Winning team (2 = T, 3 = CT, 0 = unknown / not finished).
+    pub winner_team: u8,
+}
+
+/// Top-level stats result returned by parse_demo_stats.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DemoStats {
+    pub players: Vec<PlayerStats>,
+    /// Total rounds played (count of completed rounds).
+    pub rounds: u32,
+    pub map_name: String,
+    /// Demo source guess: "faceit" | "valve" | "unknown".
+    pub source: String,
+    /// Trade-kill window in ticks (5s @ 64Hz = 320).
+    pub trade_window_ticks: u32,
+    pub kills: Vec<StatsKillRow>,
+    pub damages: Vec<StatsDamageRow>,
+    pub round_rows: Vec<StatsRoundRow>,
+}
+
 /// A player entry extracted from a CS2 demo file.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DemoPlayer {
@@ -2318,6 +2414,457 @@ pub mod commands {
         }
     }
 
+    // ── Stats scoreboard observer (Awpy-style) ─────────────────────────────
+    //
+    // Builds a per-player scoreboard from parsed events:
+    //   - player_death        → kills / deaths / assists / headshots / entry stats
+    //   - player_hurt         → damage_dealt / utility_damage / per-side damage
+    //   - round_start / _end  → round count, side tracking, KAST per round
+    //
+    // Conventions (matching Awpy / CS Demo Manager):
+    //   - Player primary key is SteamID64 (as string), NOT player name
+    //   - Trade window = 5 s = 320 ticks @ 64Hz
+    //   - ADR = damage_dealt / rounds_played
+    //   - Side stats use the player's team at the tick of each event
+    //   - Warmup events (round = 0) are dropped from final aggregation
+
+    mod s2_stats {
+        use source2_demo::prelude::*;
+        use std::collections::{HashMap, HashSet};
+
+        // ── Local helpers (duplicated from s2_deaths to keep modules standalone) ──
+
+        fn get_str(entity: &Entity, path: &str) -> String {
+            entity.get_property_by_name(path).ok()
+                .and_then(|v| TryInto::<String>::try_into(v).ok())
+                .unwrap_or_default()
+        }
+        fn get_u32(entity: &Entity, path: &str) -> u32 {
+            entity.get_property_by_name(path).ok()
+                .and_then(|v| TryInto::<u32>::try_into(v).ok())
+                .unwrap_or(0)
+        }
+        fn get_u64(entity: &Entity, path: &str) -> u64 {
+            entity.get_property_by_name(path).ok()
+                .and_then(|v| TryInto::<u64>::try_into(v).ok())
+                .unwrap_or(0)
+        }
+        fn weapon_name(raw: &str) -> String {
+            raw.trim_start_matches("weapon_").to_string()
+        }
+        fn is_utility_weapon(name: &str) -> bool {
+            matches!(name,
+                "hegrenade" | "molotov" | "incgrenade" | "inferno"
+                | "flashbang" | "smokegrenade" | "decoy"
+            )
+        }
+
+        pub struct StatsObserver {
+            // Per-controller bookkeeping
+            pub ctrl_steamid: HashMap<u32, String>,
+            pub ctrl_name:    HashMap<u32, String>,
+            pub ctrl_team:    HashMap<u32, u8>,
+
+            // Round tracking
+            pub current_round: u32,
+            pub match_started: bool,
+            pub round_open:    bool,
+            pub round_start_tick: u32,
+
+            // Output rows (filled by event handlers)
+            pub kills:         Vec<super::super::StatsKillRow>,
+            pub damages:       Vec<super::super::StatsDamageRow>,
+            pub round_rows:    Vec<super::super::StatsRoundRow>,
+            // Per-round snapshot: steam_id → team during that round.
+            // Index = round number - 1.
+            pub round_participants: Vec<HashMap<String, u8>>,
+        }
+
+        impl Default for StatsObserver {
+            fn default() -> Self {
+                Self {
+                    ctrl_steamid: HashMap::new(),
+                    ctrl_name:    HashMap::new(),
+                    ctrl_team:    HashMap::new(),
+                    current_round: 0,
+                    match_started: false,
+                    round_open:    false,
+                    round_start_tick: 0,
+                    kills:         Vec::new(),
+                    damages:       Vec::new(),
+                    round_rows:    Vec::new(),
+                    round_participants: Vec::new(),
+                }
+            }
+        }
+
+        #[observer]
+        #[uses_entities]
+        #[uses_game_events]
+        impl StatsObserver {
+            #[on_entity]
+            fn handle_entity(&mut self, _ctx: &Context, entity: &Entity) -> ObserverResult {
+                let class = entity.class().name();
+                if class != "CCSPlayerController" { return Ok(()); }
+
+                let idx = entity.index();
+                let name = get_str(entity, "m_iszPlayerName");
+                let steamid = get_u64(entity, "m_steamID");
+                let team = get_u32(entity, "m_iTeamNum") as u8;
+
+                // Skip GOTV / SourceTV (steamid 0 or below the real Steam ID range)
+                let is_real = steamid > 76_561_197_960_265_728;
+                if is_real {
+                    self.ctrl_steamid.insert(idx, steamid.to_string());
+                }
+                if !name.is_empty() && is_real {
+                    self.ctrl_name.insert(idx, name);
+                }
+                // Always track team — even if we haven't confirmed steamid yet,
+                // the team at the moment of the next round_start matters.
+                if team == 2 || team == 3 || team == 1 {
+                    self.ctrl_team.insert(idx, team);
+                }
+                Ok(())
+            }
+
+            #[on_game_event]
+            fn on_game_event(&mut self, ctx: &Context, event: &GameEvent) -> ObserverResult {
+                let tick = ctx.tick() as u32;
+                let name = event.name();
+
+                match name {
+                    "round_announce_match_start" | "begin_new_match" => {
+                        // Real match starts now. Reset round counter so round 1 = first real round.
+                        self.match_started = true;
+                        self.current_round = 0;
+                        self.round_open = false;
+                        self.kills.clear();
+                        self.damages.clear();
+                        self.round_rows.clear();
+                        self.round_participants.clear();
+                    }
+                    "round_start" => {
+                        if !self.match_started { return Ok(()); }
+                        self.current_round += 1;
+                        self.round_open = true;
+                        self.round_start_tick = tick;
+                        // Snapshot every known controller's team for this round.
+                        let mut snap: HashMap<String, u8> = HashMap::new();
+                        for (ctrl_idx, sid) in self.ctrl_steamid.iter() {
+                            let team = self.ctrl_team.get(ctrl_idx).copied().unwrap_or(0);
+                            if team == 2 || team == 3 {
+                                snap.insert(sid.clone(), team);
+                            }
+                        }
+                        self.round_participants.push(snap);
+                        // Push placeholder round row; winner/end_tick filled later.
+                        self.round_rows.push(super::super::StatsRoundRow {
+                            round: self.current_round,
+                            start_tick: tick,
+                            end_tick: 0,
+                            winner_team: 0,
+                        });
+                    }
+                    "round_end" => {
+                        if !self.match_started || !self.round_open { return Ok(()); }
+                        let winner: i32 = event.get_value("winner")
+                            .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(0);
+                        if let Some(rr) = self.round_rows.last_mut() {
+                            rr.end_tick = tick;
+                            rr.winner_team = winner.clamp(0, 255) as u8;
+                        }
+                        self.round_open = false;
+                    }
+                    "round_officially_ended" => {
+                        if !self.match_started { return Ok(()); }
+                        if let Some(rr) = self.round_rows.last_mut() {
+                            if rr.end_tick == 0 { rr.end_tick = tick; }
+                        }
+                    }
+                    "player_death" => {
+                        if !self.match_started || self.current_round == 0 { return Ok(()); }
+
+                        let raw_userid: i32 = event.get_value("userid")
+                            .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(0);
+                        let raw_attacker: i32 = event.get_value("attacker")
+                            .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(0);
+                        let raw_assister: i32 = event.get_value("assister")
+                            .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(-1);
+                        let weapon: String = event.get_value("weapon")
+                            .ok().and_then(|v| TryInto::<String>::try_into(v).ok())
+                            .as_deref().map(weapon_name).unwrap_or_default();
+                        let headshot: bool = event.get_value("headshot")
+                            .ok().and_then(|v| TryInto::<bool>::try_into(v).ok()).unwrap_or(false);
+
+                        let victim_ctrl   = (raw_userid as u32)   & 0x3FFF;
+                        let killer_ctrl   = (raw_attacker as u32) & 0x3FFF;
+                        let assister_ctrl = if raw_assister > 0 { (raw_assister as u32) & 0x3FFF } else { 0 };
+
+                        let killer_id   = self.ctrl_steamid.get(&killer_ctrl).cloned().unwrap_or_default();
+                        let victim_id   = self.ctrl_steamid.get(&victim_ctrl).cloned().unwrap_or_default();
+                        let assister_id = if assister_ctrl > 0 {
+                            self.ctrl_steamid.get(&assister_ctrl).cloned().unwrap_or_default()
+                        } else { String::new() };
+                        let killer_team = self.ctrl_team.get(&killer_ctrl).copied().unwrap_or(0);
+                        let victim_team = self.ctrl_team.get(&victim_ctrl).copied().unwrap_or(0);
+
+                        self.kills.push(super::super::StatsKillRow {
+                            round: self.current_round,
+                            tick,
+                            killer_id,
+                            victim_id,
+                            assister_id,
+                            weapon,
+                            headshot,
+                            killer_team,
+                            victim_team,
+                            is_entry: false, // computed in post-aggregation
+                            is_trade: false, // computed in post-aggregation
+                        });
+                    }
+                    "player_hurt" => {
+                        if !self.match_started || self.current_round == 0 { return Ok(()); }
+
+                        let raw_userid: i32 = event.get_value("userid")
+                            .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(0);
+                        let raw_attacker: i32 = event.get_value("attacker")
+                            .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(0);
+                        // dmg_health is the actual damage applied (already capped by engine
+                        // at the victim's remaining HP — exactly what Awpy uses for ADR).
+                        let dmg: i32 = event.get_value("dmg_health")
+                            .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(0);
+                        if dmg <= 0 { return Ok(()); }
+                        let weapon: String = event.get_value("weapon")
+                            .ok().and_then(|v| TryInto::<String>::try_into(v).ok())
+                            .as_deref().map(weapon_name).unwrap_or_default();
+                        let hitgroup: i32 = event.get_value("hitgroup")
+                            .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(0);
+
+                        let victim_ctrl   = (raw_userid   as u32) & 0x3FFF;
+                        let attacker_ctrl = (raw_attacker as u32) & 0x3FFF;
+
+                        let attacker_id = self.ctrl_steamid.get(&attacker_ctrl).cloned().unwrap_or_default();
+                        let victim_id   = self.ctrl_steamid.get(&victim_ctrl).cloned().unwrap_or_default();
+                        let attacker_team = self.ctrl_team.get(&attacker_ctrl).copied().unwrap_or(0);
+                        let is_utility = is_utility_weapon(&weapon);
+
+                        self.damages.push(super::super::StatsDamageRow {
+                            round: self.current_round,
+                            tick,
+                            attacker_id,
+                            victim_id,
+                            weapon,
+                            damage: dmg.max(0) as u32,
+                            hitgroup: hitgroup.clamp(0, 255) as u8,
+                            attacker_team,
+                            is_utility,
+                        });
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }
+        }
+
+        // ── Post-parse aggregation ──────────────────────────────────────────
+
+        const TRADE_WINDOW_TICKS: u32 = 320; // 5 s @ 64Hz
+
+        pub fn aggregate(
+            obs: &StatsObserver,
+            file_name: &str,
+            map_name: String,
+        ) -> super::super::DemoStats {
+            let mut kills = obs.kills.clone();
+
+            // Mark trade kills: K1 was traded if there exists a later K2 within
+            // TRADE_WINDOW_TICKS where K2.killer is on K1.victim's team and
+            // K2.victim == K1.killer.
+            for i in 0..kills.len() {
+                let k1_tick = kills[i].tick;
+                let k1_killer = kills[i].killer_id.clone();
+                let k1_victim_team = kills[i].victim_team;
+                if k1_killer.is_empty() { continue; }
+                for j in (i+1)..kills.len() {
+                    if kills[j].tick.saturating_sub(k1_tick) > TRADE_WINDOW_TICKS { break; }
+                    if kills[j].round != kills[i].round { break; }
+                    if kills[j].killer_team == k1_victim_team
+                        && kills[j].victim_id == k1_killer
+                        && !kills[j].killer_id.is_empty()
+                    {
+                        kills[i].is_trade = true;
+                        break;
+                    }
+                }
+            }
+
+            // Mark entry kills: first kill of each round
+            let mut seen_rounds: HashSet<u32> = HashSet::new();
+            for k in kills.iter_mut() {
+                if !seen_rounds.contains(&k.round) {
+                    seen_rounds.insert(k.round);
+                    k.is_entry = true;
+                }
+            }
+
+            // Initialize player rows from the controller table (so the scoreboard
+            // shows everyone, even players who didn't get a kill or take damage).
+            let mut players: HashMap<String, super::super::PlayerStats> = HashMap::new();
+            for (ctrl_idx, sid) in obs.ctrl_steamid.iter() {
+                let name = obs.ctrl_name.get(ctrl_idx).cloned().unwrap_or_default();
+                let team = obs.ctrl_team.get(ctrl_idx).copied().unwrap_or(0);
+                let p = players.entry(sid.clone()).or_insert_with(|| super::super::PlayerStats {
+                    steam_id: sid.clone(),
+                    name: name.clone(),
+                    team_num: team,
+                    ..Default::default()
+                });
+                if !name.is_empty() { p.name = name; }
+                if team != 0 { p.team_num = team; }
+            }
+
+            let ensure = |players: &mut HashMap<String, super::super::PlayerStats>, sid: &str| {
+                if !players.contains_key(sid) {
+                    players.insert(sid.to_string(), super::super::PlayerStats {
+                        steam_id: sid.to_string(),
+                        ..Default::default()
+                    });
+                }
+            };
+
+            // Aggregate kills
+            for k in &kills {
+                if !k.killer_id.is_empty() && k.killer_id != k.victim_id {
+                    ensure(&mut players, &k.killer_id);
+                    let p = players.get_mut(&k.killer_id).unwrap();
+                    p.kills += 1;
+                    if k.headshot { p.headshot_kills += 1; }
+                    if k.is_entry { p.entry_kills += 1; }
+                    match k.killer_team {
+                        2 => p.t_kills += 1,
+                        3 => p.ct_kills += 1,
+                        _ => {}
+                    }
+                }
+                if !k.victim_id.is_empty() {
+                    ensure(&mut players, &k.victim_id);
+                    let p = players.get_mut(&k.victim_id).unwrap();
+                    p.deaths += 1;
+                    if k.is_entry { p.entry_deaths += 1; }
+                    match k.victim_team {
+                        2 => p.t_deaths += 1,
+                        3 => p.ct_deaths += 1,
+                        _ => {}
+                    }
+                }
+                if !k.assister_id.is_empty() {
+                    ensure(&mut players, &k.assister_id);
+                    players.get_mut(&k.assister_id).unwrap().assists += 1;
+                }
+            }
+
+            // Aggregate damage
+            for d in &obs.damages {
+                if d.attacker_id.is_empty() || d.attacker_id == d.victim_id { continue; }
+                ensure(&mut players, &d.attacker_id);
+                let p = players.get_mut(&d.attacker_id).unwrap();
+                p.damage_dealt += d.damage;
+                if d.is_utility { p.utility_damage += d.damage; }
+                match d.attacker_team {
+                    2 => p.t_damage += d.damage,
+                    3 => p.ct_damage += d.damage,
+                    _ => {}
+                }
+            }
+
+            // KAST per round — count only COMPLETED rounds (end_tick > 0).
+            // A round_start without a matching round_end (truncated demo, last
+            // round of an aborted match) is not "played" for the purpose of
+            // KAST/ADR denominators.
+            let completed_rounds: Vec<u32> = obs.round_rows.iter()
+                .filter(|rr| rr.end_tick > 0)
+                .map(|rr| rr.round)
+                .collect();
+            let total_rounds = completed_rounds.len() as u32;
+            for &round_num in &completed_rounds {
+                let kr: Vec<&super::super::StatsKillRow> = kills.iter()
+                    .filter(|k| k.round == round_num).collect();
+                let killers:  HashSet<&String> = kr.iter()
+                    .map(|k| &k.killer_id).filter(|s| !s.is_empty()).collect();
+                let assisters: HashSet<&String> = kr.iter()
+                    .map(|k| &k.assister_id).filter(|s| !s.is_empty()).collect();
+                let victims:  HashSet<&String> = kr.iter()
+                    .map(|k| &k.victim_id).filter(|s| !s.is_empty()).collect();
+                let traded_victims: HashSet<&String> = kr.iter()
+                    .filter(|k| k.is_trade).map(|k| &k.victim_id).collect();
+
+                if let Some(parts) = obs.round_participants.get((round_num - 1) as usize) {
+                    for sid in parts.keys() {
+                        ensure(&mut players, sid);
+                        let p = players.get_mut(sid).unwrap();
+                        let got_k = killers.contains(&sid);
+                        let got_a = assisters.contains(&sid);
+                        let died  = victims.contains(&sid);
+                        let traded = traded_victims.contains(&sid);
+                        let survived = !died;
+                        if got_k || got_a || survived || traded {
+                            p.kast_rounds += 1;
+                        }
+                    }
+                }
+            }
+
+            // Rounds played + per-side rounds (from round_participants snapshots).
+            // Only count completed rounds (matching round_rows[i].end_tick > 0).
+            for (i, parts) in obs.round_participants.iter().enumerate() {
+                let is_completed = obs.round_rows.get(i)
+                    .map(|rr| rr.end_tick > 0).unwrap_or(false);
+                if !is_completed { continue; }
+                for (sid, team) in parts.iter() {
+                    ensure(&mut players, sid);
+                    let p = players.get_mut(sid).unwrap();
+                    p.rounds_played += 1;
+                    match *team {
+                        2 => p.t_rounds += 1,
+                        3 => p.ct_rounds += 1,
+                        _ => {}
+                    }
+                }
+            }
+
+            // Drop "phantom" players (steam_id was empty) and sort by kills desc.
+            let mut player_list: Vec<super::super::PlayerStats> = players
+                .into_values()
+                .filter(|p| !p.steam_id.is_empty())
+                .collect();
+            player_list.sort_by(|a, b| b.kills.cmp(&a.kills).then(a.name.cmp(&b.name)));
+
+            // FACEIT vs Valve heuristic from filename. FACEIT match demos are
+            // typically named "match-1-XXXXXXX-...-de_xxx.dem"; Valve MM demos
+            // are usually "auto-yyyymmdd-..." or hex match IDs.
+            let lname = file_name.to_lowercase();
+            let source = if lname.starts_with("match-") || lname.contains("faceit") {
+                "faceit".to_string()
+            } else if lname.starts_with("auto-") || lname.contains("003_") {
+                "valve".to_string()
+            } else {
+                "unknown".to_string()
+            };
+
+            super::super::DemoStats {
+                players: player_list,
+                rounds: total_rounds,
+                map_name,
+                source,
+                trade_window_ticks: TRADE_WINDOW_TICKS,
+                kills,
+                damages: obs.damages.clone(),
+                round_rows: obs.round_rows.clone(),
+            }
+        }
+    }
+
     // ── Property Probe ─────────────────────────────────────────────────────
     // Diagnostic: tries many property-path formats on the first few
     // CCSPlayerPawn entities and reports which ones return non-zero/non-empty
@@ -2496,6 +3043,96 @@ pub mod commands {
         );
 
         Ok(obs.deaths.clone())
+    }
+
+    /// Parse a CS2 demo and return a full Awpy-style scoreboard plus the raw
+    /// kills/damages/rounds tables for debugging. The frontend should call
+    /// `write_stats_debug` afterwards to dump the JSON next to the demo.
+    #[tauri::command]
+    pub async fn parse_demo_stats(filepath: String) -> Result<super::DemoStats, String> {
+        use source2_demo::DemoRunner;
+
+        let file_data = std::fs::read(&filepath)
+            .map_err(|e| format!("Cannot read demo file: {e}"))?;
+
+        let map_name = extract_map_name(&file_data);
+        let file_name = Path::new(&filepath)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        let cursor = std::io::Cursor::new(file_data);
+        let mut parser = source2_demo::Parser::from_reader(cursor)
+            .map_err(|e| format!("Parser init error: {e}"))?;
+
+        let collector = parser.register_observer::<s2_stats::StatsObserver>();
+        parser.run_to_end().map_err(|e| format!("Parse error: {e}"))?;
+
+        let obs = collector.borrow();
+        let stats = s2_stats::aggregate(&obs, &file_name, map_name);
+
+        eprintln!(
+            "[CS2DM] parse_demo_stats: {} players, {} rounds, {} kills, {} damages (map={}, source={}) in {}",
+            stats.players.len(),
+            stats.rounds,
+            stats.kills.len(),
+            stats.damages.len(),
+            stats.map_name,
+            stats.source,
+            filepath
+        );
+
+        Ok(stats)
+    }
+
+    /// Write the JSON debug payload to `<demo>.stats-debug.json` next to the
+    /// demo file. Called automatically by the scoreboard modal after every
+    /// stats compute, so the user always has a sidecar JSON to inspect.
+    #[tauri::command]
+    pub fn write_stats_debug(demo_filepath: String, json: String) -> Result<String, String> {
+        // Hardening: only accept paths that point to an existing demo file with
+        // an allowed extension (.dem / .dem.gz / .dem.zst), then write the
+        // sidecar to the canonicalized parent directory. This prevents the
+        // command from being abused as an arbitrary local file write primitive
+        // (e.g. via a compromised webview / XSS).
+        let demo_path = PathBuf::from(&demo_filepath);
+
+        let stem = demo_path.file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| "Invalid demo filename".to_string())?;
+
+        let lname = stem.to_lowercase();
+        if !(lname.ends_with(".dem")
+            || lname.ends_with(".dem.gz")
+            || lname.ends_with(".dem.zst"))
+        {
+            return Err("Refused: input is not a .dem / .dem.gz / .dem.zst file".to_string());
+        }
+
+        if !demo_path.is_file() {
+            return Err("Refused: demo file does not exist".to_string());
+        }
+
+        // Canonicalize the demo file (resolves symlinks + relative parts), then
+        // write the sidecar next to the resolved file.
+        let canonical = fs::canonicalize(&demo_path)
+            .map_err(|e| format!("Cannot resolve demo path: {e}"))?;
+        let parent = canonical.parent()
+            .ok_or_else(|| "Demo has no parent directory".to_string())?;
+
+        let out_path = parent.join(format!("{stem}.stats-debug.json"));
+
+        // Reject if an existing sidecar is a symlink (don't follow it out of
+        // the demo dir) or anything other than a regular file.
+        if let Ok(meta) = fs::symlink_metadata(&out_path) {
+            if meta.file_type().is_symlink() || !meta.is_file() {
+                return Err("Refused: existing sidecar is not a regular file".to_string());
+            }
+        }
+
+        fs::write(&out_path, json).map_err(|e| format!("Cannot write debug file: {e}"))?;
+        Ok(out_path.to_string_lossy().to_string())
     }
 
     /// Parsed data from a CS2 overview .txt file.
@@ -2716,6 +3353,8 @@ pub fn run() {
             commands::verify_license,
             commands::validate_license_stored,
             commands::parse_demo_deaths,
+            commands::parse_demo_stats,
+            commands::write_stats_debug,
             commands::probe_pawn_properties,
             commands::get_map_radar_info,
         ])

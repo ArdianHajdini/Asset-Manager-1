@@ -318,6 +318,110 @@ export async function tauriParseDemoDeaths(
   return invoke<TauriDeathEvent[]>("parse_demo_deaths", { filepath, playerName });
 }
 
+// ─────────────────────────────────────────
+//  Stats Scoreboard (Awpy-style)
+// ─────────────────────────────────────────
+
+/** Per-player aggregate scoreboard row, keyed by SteamID64. */
+export interface TauriPlayerStats {
+  steamId: string;
+  name: string;
+  /** 2 = T, 3 = CT, 0 = unassigned */
+  teamNum: number;
+  kills: number;
+  deaths: number;
+  assists: number;
+  headshotKills: number;
+  /** Total damage dealt (Awpy convention: capped at remaining victim HP). */
+  damageDealt: number;
+  /** Damage from grenades (he/molotov/incendiary). */
+  utilityDamage: number;
+  /** Number of rounds the player participated in. */
+  roundsPlayed: number;
+  /** Rounds where the player got K, A, S, or T (used for KAST%). */
+  kastRounds: number;
+  entryKills: number;
+  entryDeaths: number;
+  tKills: number;
+  tDeaths: number;
+  tDamage: number;
+  tRounds: number;
+  ctKills: number;
+  ctDeaths: number;
+  ctDamage: number;
+  ctRounds: number;
+}
+
+export interface TauriStatsKillRow {
+  round: number;
+  tick: number;
+  killerId: string;
+  victimId: string;
+  assisterId: string;
+  weapon: string;
+  headshot: boolean;
+  killerTeam: number;
+  victimTeam: number;
+  isEntry: boolean;
+  isTrade: boolean;
+}
+
+export interface TauriStatsDamageRow {
+  round: number;
+  tick: number;
+  attackerId: string;
+  victimId: string;
+  weapon: string;
+  damage: number;
+  hitgroup: number;
+  attackerTeam: number;
+  isUtility: boolean;
+}
+
+export interface TauriStatsRoundRow {
+  round: number;
+  startTick: number;
+  endTick: number;
+  /** 2 = T win, 3 = CT win, 0 = unknown */
+  winnerTeam: number;
+}
+
+export interface TauriDemoStats {
+  players: TauriPlayerStats[];
+  rounds: number;
+  mapName: string;
+  /** "faceit" | "valve" | "unknown" */
+  source: string;
+  tradeWindowTicks: number;
+  kills: TauriStatsKillRow[];
+  damages: TauriStatsDamageRow[];
+  roundRows: TauriStatsRoundRow[];
+}
+
+/**
+ * Parse a CS2 demo and return a full Awpy-style scoreboard plus the raw
+ * kills/damages/rounds tables. Pair with tauriWriteStatsDebug to dump JSON
+ * next to the demo for offline inspection.
+ */
+export async function tauriParseDemoStats(
+  filepath: string,
+): Promise<TauriDemoStats> {
+  const invoke = await getInvoke();
+  return invoke<TauriDemoStats>("parse_demo_stats", { filepath });
+}
+
+/**
+ * Write the scoreboard JSON to `<demo>.stats-debug.json` next to the demo
+ * file. Returns the absolute output path.
+ */
+export async function tauriWriteStatsDebug(
+  demoFilepath: string,
+  json: string,
+): Promise<string> {
+  const invoke = await getInvoke();
+  return invoke<string>("write_stats_debug", { demoFilepath, json });
+}
+
 /**
  * Probe the property namespace of CCSPlayerPawn entities in a demo.
  * Tries ~25 different path formats and returns a report string showing

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import {
   FolderOpen, Pencil, Trash2, Check, X, Copy, Loader2,
-  Volume2, Info, Users, ChevronDown, ChevronUp, BarChart2,
+  Volume2, Info, Users, ChevronDown, ChevronUp, BarChart2, Trophy,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Demo } from "../types/demo";
@@ -27,6 +27,7 @@ import {
   type TauriDemoPlayer,
 } from "../services/tauriBridge";
 import { StatisticsModal } from "./StatisticsModal";
+import { StatsScoreboardModal } from "./StatsScoreboardModal";
 import { cn } from "@/lib/utils";
 
 interface DemoCardProps {
@@ -57,6 +58,8 @@ export function DemoCard({ demo }: DemoCardProps) {
   const [showStats, setShowStats] = useState(false);
   const [statsPlayers, setStatsPlayers] = useState<TauriDemoPlayer[] | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
+
+  const [showScoreboard, setShowScoreboard] = useState(false);
   const playdemoArg = buildPlaydemoArg(demo.filename);
 
   const voiceModeLabel = (mode: VoiceMode): string => {
@@ -431,6 +434,17 @@ export function DemoCard({ demo }: DemoCardProps) {
               {statsLoading ? t("demo.statsLoading") : t("demo.statistics")}
             </button>
           )}
+
+          {isTauri() && demo.filepath && (
+            <button
+              onClick={() => setShowScoreboard(true)}
+              title="Scoreboard (kills, deaths, ADR, KAST, side splits)"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-white/10 bg-white/4 text-white/50 hover:text-white/80 hover:bg-white/8 hover:border-white/20 transition-all duration-150"
+            >
+              <Trophy className="w-3.5 h-3.5" />
+              Scoreboard
+            </button>
+          )}
         </div>
 
         {/* Copied command panel */}
@@ -491,6 +505,15 @@ export function DemoCard({ demo }: DemoCardProps) {
         filepath={demo.filepath}
         players={statsPlayers}
         onClose={() => setShowStats(false)}
+      />
+    )}
+
+    {/* Scoreboard Modal (Awpy-style) */}
+    {showScoreboard && demo.filepath && (
+      <StatsScoreboardModal
+        demoName={demo.displayName}
+        filepath={demo.filepath}
+        onClose={() => setShowScoreboard(false)}
       />
     )}
   </>
