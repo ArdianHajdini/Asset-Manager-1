@@ -304,6 +304,44 @@ pub mod commands {
 
     use super::{DemoEntry, LaunchResult};
 
+    // ── Panic isolation ────────────────────────────────────────────
+    //
+    // The third-party `source2-demo` crate can panic on edge-case demos
+    // (malformed entities, unexpected message types, etc.). Without a guard,
+    // such a panic unwinds through Tauri's runtime and TAKES DOWN THE WHOLE
+    // APP PROCESS — which presented to users as "the app crashes when it
+    // gets to the last demo" (in reality: one demo's parse panicked, and
+    // since there's no isolation, the entire process died).
+    //
+    // `safe_call_sync` runs a closure inside `catch_unwind` so a panic is
+    // converted into a normal `Err(String)` returned to the frontend. The
+    // queue keeps moving, the user sees a clear error per failed demo, and
+    // the app stays alive.
+    fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+        if let Some(s) = payload.downcast_ref::<&'static str>() {
+            (*s).to_string()
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        }
+    }
+
+    fn safe_call_sync<T>(
+        name: &str,
+        f: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        match catch_unwind(AssertUnwindSafe(f)) {
+            Ok(r) => r,
+            Err(payload) => {
+                let msg = panic_payload_to_string(payload);
+                eprintln!("[CS2DM] {name} PANICKED: {msg}");
+                Err(format!("Demo parser crashed (isolated): {msg}"))
+            }
+        }
+    }
+
     // ── Compression helpers ────────────────────────────────────────
 
     /// Returns true if the byte slice starts with a gzip magic header (1F 8B).
@@ -1455,6 +1493,10 @@ pub mod commands {
     ///   Step 2: CDemoStringTables "userinfo" → voice_mute slot lookup.
     #[tauri::command]
     pub fn parse_demo_players(filepath: String) -> Result<Vec<super::DemoPlayer>, String> {
+        safe_call_sync("parse_demo_players", || parse_demo_players_inner(filepath))
+    }
+
+    fn parse_demo_players_inner(filepath: String) -> Result<Vec<super::DemoPlayer>, String> {
         // ── Primary: source2-demo entity observer ─────────────────────────
         // entity.index() IS the voice slot. Returns complete player data including
         // team, xuid (where available), and entity_id in a single pass.
@@ -2986,6 +3028,17 @@ pub mod commands {
 
     #[tauri::command]
     pub async fn probe_pawn_properties(filepath: String) -> Result<String, String> {
+        // Same panic-isolation treatment as the other source2-demo callers.
+        tokio::task::spawn_blocking(move || {
+            safe_call_sync("probe_pawn_properties", || {
+                probe_pawn_properties_inner(filepath)
+            })
+        })
+        .await
+        .map_err(|e| format!("Parser task crashed: {e}"))?
+    }
+
+    fn probe_pawn_properties_inner(filepath: String) -> Result<String, String> {
         use source2_demo::DemoRunner;
 
         let file = std::fs::File::open(&filepath)
@@ -3009,6 +3062,22 @@ pub mod commands {
 
     #[tauri::command]
     pub async fn parse_demo_deaths(
+        filepath: String,
+        player_name: String,
+    ) -> Result<Vec<super::DemoDeathEvent>, String> {
+        // Run the heavy CPU-bound work on the blocking thread pool. tokio's
+        // spawn_blocking ALSO catches panics and returns them as JoinError —
+        // so a source2-demo panic on one demo no longer kills the whole app.
+        tokio::task::spawn_blocking(move || {
+            safe_call_sync("parse_demo_deaths", || {
+                parse_demo_deaths_inner(filepath, player_name)
+            })
+        })
+        .await
+        .map_err(|e| format!("Parser task crashed: {e}"))?
+    }
+
+    fn parse_demo_deaths_inner(
         filepath: String,
         player_name: String,
     ) -> Result<Vec<super::DemoDeathEvent>, String> {
@@ -3050,6 +3119,17 @@ pub mod commands {
     /// `write_stats_debug` afterwards to dump the JSON next to the demo.
     #[tauri::command]
     pub async fn parse_demo_stats(filepath: String) -> Result<super::DemoStats, String> {
+        // Same panic-isolation + spawn_blocking treatment as parse_demo_deaths.
+        // A panic inside source2-demo / our observer used to take down the
+        // whole Tauri process; now it's converted to a normal Err.
+        tokio::task::spawn_blocking(move || {
+            safe_call_sync("parse_demo_stats", || parse_demo_stats_inner(filepath))
+        })
+        .await
+        .map_err(|e| format!("Parser task crashed: {e}"))?
+    }
+
+    fn parse_demo_stats_inner(filepath: String) -> Result<super::DemoStats, String> {
         use source2_demo::DemoRunner;
 
         let file_data = std::fs::read(&filepath)
