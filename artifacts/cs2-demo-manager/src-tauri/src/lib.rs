@@ -342,6 +342,120 @@ pub mod commands {
         }
     }
 
+    // ── Parse error logging ────────────────────────────────────────
+    //
+    // Every demo-parse failure (Err return OR caught panic) is appended to
+    // `easyDemo_parse_errors.log` next to the executable. The user can send
+    // this file to support so we can see exactly which demo broke and why
+    // without needing them to copy logs from the console.
+    //
+    // The log writer is best-effort: if anything goes wrong (no exe path,
+    // disk full, perms), it falls back to `%TEMP%` and finally to silent
+    // failure — we never let logging break the parse flow itself.
+
+    /// Convert a Unix timestamp (seconds since epoch) to a human-readable
+    /// "YYYY-MM-DD HH:MM:SS UTC" string. Uses Howard Hinnant's date algorithm
+    /// so we don't need a chrono/time dependency just for log timestamps.
+    fn format_utc(secs: u64) -> String {
+        let secs_of_day = (secs % 86_400) as u32;
+        let h = secs_of_day / 3600;
+        let m = (secs_of_day / 60) % 60;
+        let s = secs_of_day % 60;
+
+        // Days since 1970-01-01 → civil date (Hinnant)
+        let days = (secs / 86_400) as i64;
+        let z = days + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = (z - era * 146_097) as u64;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let mut y = yoe as i64 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+        if mo <= 2 {
+            y += 1;
+        }
+        format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", y, mo, d, h, m, s)
+    }
+
+    /// Resolve the directory the running executable lives in, falling back to
+    /// the system temp dir if the exe path can't be determined.
+    fn parse_log_path() -> PathBuf {
+        let dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(std::env::temp_dir);
+        dir.join("easyDemo_parse_errors.log")
+    }
+
+    /// Append a structured failure entry to the parse-error log next to the
+    /// exe. Always silent on failure — never bubble up.
+    pub(crate) fn log_parse_failure(command: &str, filepath: &str, err: &str) {
+        use std::io::Write;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let ts = format_utc(secs);
+
+        // Pull a few extra context bits the user/we will want when reading
+        // the log: app version, demo file size, demo mtime. All best-effort.
+        let app_version = env!("CARGO_PKG_VERSION");
+        let (file_size, file_mtime) = match fs::metadata(filepath) {
+            Ok(meta) => {
+                let size = meta.len();
+                let mtime_secs = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                (size, format_utc(mtime_secs))
+            }
+            Err(_) => (0, "<file metadata unavailable>".to_string()),
+        };
+
+        let entry = format!(
+            "===== {ts} =====\n\
+             command:      {command}\n\
+             app_version:  {app_version}\n\
+             os:           {os}\n\
+             demo_path:    {filepath}\n\
+             demo_size:    {file_size} bytes\n\
+             demo_mtime:   {file_mtime}\n\
+             error:        {err}\n\n",
+            os = std::env::consts::OS,
+        );
+
+        let log_path = parse_log_path();
+        let _ = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .and_then(|mut f| f.write_all(entry.as_bytes()));
+
+        eprintln!("[CS2DM] {command} failure logged to {}", log_path.display());
+    }
+
+    /// Convenience: run a parse pipeline and log on Err. Wraps both the
+    /// `safe_call_sync` panic isolation and the post-call logging.
+    fn parse_with_logging<T>(
+        command: &str,
+        filepath: &str,
+        f: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        match safe_call_sync(command, f) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                log_parse_failure(command, filepath, &e);
+                Err(e)
+            }
+        }
+    }
+
     // ── Compression helpers ────────────────────────────────────────
 
     /// Returns true if the byte slice starts with a gzip magic header (1F 8B).
@@ -1493,7 +1607,10 @@ pub mod commands {
     ///   Step 2: CDemoStringTables "userinfo" → voice_mute slot lookup.
     #[tauri::command]
     pub fn parse_demo_players(filepath: String) -> Result<Vec<super::DemoPlayer>, String> {
-        safe_call_sync("parse_demo_players", || parse_demo_players_inner(filepath))
+        let fp = filepath.clone();
+        parse_with_logging("parse_demo_players", &fp, || {
+            parse_demo_players_inner(filepath)
+        })
     }
 
     fn parse_demo_players_inner(filepath: String) -> Result<Vec<super::DemoPlayer>, String> {
@@ -3029,13 +3146,18 @@ pub mod commands {
     #[tauri::command]
     pub async fn probe_pawn_properties(filepath: String) -> Result<String, String> {
         // Same panic-isolation treatment as the other source2-demo callers.
-        tokio::task::spawn_blocking(move || {
+        let fp = filepath.clone();
+        let result: Result<String, String> = tokio::task::spawn_blocking(move || {
             safe_call_sync("probe_pawn_properties", || {
                 probe_pawn_properties_inner(filepath)
             })
         })
         .await
-        .map_err(|e| format!("Parser task crashed: {e}"))?
+        .map_err(|e| format!("Parser task crashed: {e}"))?;
+        if let Err(ref e) = result {
+            log_parse_failure("probe_pawn_properties", &fp, e);
+        }
+        result
     }
 
     fn probe_pawn_properties_inner(filepath: String) -> Result<String, String> {
@@ -3068,13 +3190,19 @@ pub mod commands {
         // Run the heavy CPU-bound work on the blocking thread pool. tokio's
         // spawn_blocking ALSO catches panics and returns them as JoinError —
         // so a source2-demo panic on one demo no longer kills the whole app.
-        tokio::task::spawn_blocking(move || {
-            safe_call_sync("parse_demo_deaths", || {
-                parse_demo_deaths_inner(filepath, player_name)
+        let fp = filepath.clone();
+        let result: Result<Vec<super::DemoDeathEvent>, String> =
+            tokio::task::spawn_blocking(move || {
+                safe_call_sync("parse_demo_deaths", || {
+                    parse_demo_deaths_inner(filepath, player_name)
+                })
             })
-        })
-        .await
-        .map_err(|e| format!("Parser task crashed: {e}"))?
+            .await
+            .map_err(|e| format!("Parser task crashed: {e}"))?;
+        if let Err(ref e) = result {
+            log_parse_failure("parse_demo_deaths", &fp, e);
+        }
+        result
     }
 
     fn parse_demo_deaths_inner(
@@ -3122,11 +3250,17 @@ pub mod commands {
         // Same panic-isolation + spawn_blocking treatment as parse_demo_deaths.
         // A panic inside source2-demo / our observer used to take down the
         // whole Tauri process; now it's converted to a normal Err.
-        tokio::task::spawn_blocking(move || {
-            safe_call_sync("parse_demo_stats", || parse_demo_stats_inner(filepath))
-        })
-        .await
-        .map_err(|e| format!("Parser task crashed: {e}"))?
+        let fp = filepath.clone();
+        let result: Result<super::DemoStats, String> =
+            tokio::task::spawn_blocking(move || {
+                safe_call_sync("parse_demo_stats", || parse_demo_stats_inner(filepath))
+            })
+            .await
+            .map_err(|e| format!("Parser task crashed: {e}"))?;
+        if let Err(ref e) = result {
+            log_parse_failure("parse_demo_stats", &fp, e);
+        }
+        result
     }
 
     fn parse_demo_stats_inner(filepath: String) -> Result<super::DemoStats, String> {
