@@ -1,0 +1,5 @@
+#!/bin/sh
+# Auto-push to GitHub after every commit (checkpoints included).
+if [ -n "$GITHUB_PERSONAL_ACCESS_TOKEN" ]; then
+  git push "https://${GITHUB_PERSONAL_ACCESS_TOKEN}@github.com/ArdianHajdini/Asset-Manager-1.git" main 2>&1
+fi
