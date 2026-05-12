@@ -26,6 +26,7 @@ import {
   tauriParseDemoPlayers,
   type TauriDemoPlayer,
 } from "../services/tauriBridge";
+import { enqueueParseJob } from "../services/parseQueue";
 import { StatisticsModal } from "./StatisticsModal";
 import { StatsScoreboardModal } from "./StatsScoreboardModal";
 import { cn } from "@/lib/utils";
@@ -85,18 +86,25 @@ export function DemoCard({ demo }: DemoCardProps) {
     if (!isTauri() || !demo.filepath) return;
     if (getCachedPlayers(demo.filepath) !== null) return;
     if (parsedPlayers !== null || parsing) return;
+    let cancelled = false;
     setParsing(true);
-    tauriParseDemoPlayers(demo.filepath)
+    // Run through the global serial queue so that all DemoCards on screen
+    // parse ONE at a time instead of firing simultaneously (which crashed the
+    // Tauri process when many demos were loaded).
+    enqueueParseJob(() => tauriParseDemoPlayers(demo.filepath!))
       .then((players) => {
+        if (cancelled) return;
         setCachedPlayers(demo.filepath!, players);
         setParsedPlayers(players);
         setParseError(null);
       })
       .catch((err) => {
+        if (cancelled) return;
         setParseError(String(err));
         setParsedPlayers([]);
       })
-      .finally(() => setParsing(false));
+      .finally(() => { if (!cancelled) setParsing(false); });
+    return () => { cancelled = true; };
   }, [demo.filepath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleCopyCommand() {
@@ -153,7 +161,7 @@ export function DemoCard({ demo }: DemoCardProps) {
     }
     setStatsLoading(true);
     try {
-      const players = parsedPlayers ?? await tauriParseDemoPlayers(demo.filepath);
+      const players = parsedPlayers ?? await enqueueParseJob(() => tauriParseDemoPlayers(demo.filepath!));
       if (!parsedPlayers && demo.filepath) {
         setParsedPlayers(players);
         setCachedPlayers(demo.filepath, players);
