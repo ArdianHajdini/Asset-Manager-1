@@ -295,7 +295,7 @@ export interface TauriDeathEvent {
   shotBeforeStop: boolean;
   /** Killer's horizontal speed (u/s) at the tick the killing shot was fired. */
   killerSpeedAtShot: number;
-  /** Counter-strafe quality 0.0–1.0, or -1.0 when player was already stationary. */
+  /** Counter-strafe quality 0.0–1.0, or -1.0 when weapon_fire was not captured in the pre-death window. */
   counterStrafeScore: number;
   /** True when the killer was moving (> 50 u/s) in the ticks before the killing shot. */
   wasMovingBeforeShot: boolean;

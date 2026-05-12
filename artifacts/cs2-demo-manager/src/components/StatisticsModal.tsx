@@ -646,7 +646,7 @@ function SummaryStats({ events }: { events: TauriDeathEvent[] }) {
 
   // Counter-strafe quality: kills where you were moving before the shot
   const relevantKills = kills.filter(e => e.hasPosData && e.wasMovingBeforeShot);
-  const goodCsKills   = relevantKills.filter(e => e.counterStrafeScore >= 0.7);
+  const goodCsKills   = relevantKills.filter(e => e.counterStrafeScore >= 0.75);
   const csPercent = relevantKills.length > 0
     ? Math.round(goodCsKills.length / relevantKills.length * 100)
     : null;

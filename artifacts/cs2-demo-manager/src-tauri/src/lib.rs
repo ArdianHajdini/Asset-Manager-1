@@ -139,12 +139,13 @@ pub struct DemoDeathEvent {
     #[serde(rename = "killerSpeedAtShot")]
     pub killer_speed_at_shot: f32,
     /// Counter-strafe quality score 0.0–1.0 for the killing shot.
-    /// Based on how much the killer's speed dropped between the pre-shot window
-    /// (ticks -15 to -3 before shot) and the shot tick itself.
-    /// -1.0 = not applicable (killer was already stationary before the shot).
+    /// Derived purely from the killer's horizontal speed at the weapon_fire tick:
+    ///   0 u/s  → 1.00 · <5 → 0.95 · <20 → 0.80 · <60 → 0.60 · <130 → 0.30 · else 0.05
+    /// -1.0 = weapon_fire event not found within 64 ticks of the death
+    ///        (fallback: killerSpeedAtShot holds the killer's death-tick speed instead).
     #[serde(rename = "counterStrafeScore")]
     pub counter_strafe_score: f32,
-    /// True if the killer was moving at speed > 50 u/s in the 15 ticks before
+    /// True if the killer was moving at speed > 50 u/s in ticks 2–16 before
     /// the killing shot (i.e. counter-strafing was relevant / attempted).
     #[serde(rename = "wasMovingBeforeShot")]
     pub was_moving_before_shot: bool,
@@ -1743,7 +1744,7 @@ pub mod commands {
             tick: u32,
             /// Horizontal speed (u/s) at the exact moment the trigger was pulled.
             speed_at_shot: f32,
-            /// 0.0–1.0 counter-strafe quality; -1.0 = not applicable (was stationary).
+            /// 0.0–1.0 counter-strafe quality; -1.0 = weapon_fire not found in window.
             counter_strafe_score: f32,
             /// True if the player was moving (> 50 u/s) in the window before the shot.
             was_moving_before: bool,
@@ -2147,7 +2148,7 @@ pub mod commands {
                             .ctrl_name
                             .get(&killer_ctrl)
                             .cloned()
-                            .unwrap_or_else(|| "SourceTV".to_string());
+                            .unwrap_or_default(); // empty string for world/env kills
                         let victim_steamid = self
                             .ctrl_steamid
                             .get(&victim_ctrl)
