@@ -1669,7 +1669,27 @@ pub mod commands {
         // ── Primary: source2-demo entity observer ─────────────────────────
         // entity.index() IS the voice slot. Returns complete player data including
         // team, xuid (where available), and entity_id in a single pass.
-        match parse_players_via_source2(&filepath) {
+        //
+        // The source2-demo crate panics on a small set of malformed packet
+        // sequences (e.g. "len is 0 but the index is 0"). We wrap the call in
+        // catch_unwind LOCALLY so a panic is converted into an Err and the
+        // CDemoFileInfo+CDemoStringTables fallback below still runs. Without
+        // this local wrapper the outer parse_with_logging catch_unwind would
+        // abort the whole function and the fallback would be unreachable.
+        let primary_result: Result<Vec<super::DemoPlayer>, String> = {
+            let fp = filepath.clone();
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                parse_players_via_source2(&fp)
+            })) {
+                Ok(r) => r,
+                Err(payload) => Err(format!(
+                    "source2-demo panicked: {}",
+                    panic_payload_to_string(payload)
+                )),
+            }
+        };
+
+        match primary_result {
             Ok(players) if !players.is_empty() => {
                 eprintln!(
                     "[CS2DM] parse_demo_players: {} Spieler via source2-demo",
@@ -2079,8 +2099,15 @@ pub mod commands {
             /// Updated every entity tick; capped at 16 entries (~250 ms at 64 Hz).
             /// SourceTV pawns (Z > 500) are excluded.
             pub pawn_vel_history: HashMap<u32, Vec<(u32, f32)>>,
-            /// controller entity_index → info from their most recent weapon_fire event.
+            /// controller entity_index → info from the FIRST shot of the current burst.
+            /// Cleared when the player dies (so next life starts fresh) and only
+            /// inserted when there's no entry yet or the previous shot was >32 ticks
+            /// (~500 ms) ago — that's the start of a new burst/new fight.
             pub last_weapon_fire: HashMap<u32, WeaponFireInfo>,
+            /// pawn entity_index → (last seen tick, last seen XYZ position).
+            /// Used to compute velocity from position deltas, since CS2 demos do
+            /// not network m_vecVelocity reliably for player pawns (it reads as 0).
+            pub prev_pos: HashMap<u32, (u32, [f32; 3])>,
             /// how many controllers we have logged via eprintln (capped at 3)
             pub dbg_ctrl_seen: u32,
             /// how many pawns we have logged via eprintln (capped at 3)
@@ -2101,6 +2128,7 @@ pub mod commands {
                     last_kill_tick: HashMap::new(),
                     pawn_vel_history: HashMap::new(),
                     last_weapon_fire: HashMap::new(),
+                    prev_pos: HashMap::new(),
                     dbg_ctrl_seen: 0,
                     dbg_pawn_seen: 0,
                 }
@@ -2261,31 +2289,54 @@ pub mod commands {
                         snap.eye_yaw   = get_f32(entity, "m_angEyeAngles[1]");
                     }
 
-                    // Velocity — in CS2 demos m_vecVelocity is ONLY exposed as a vec3;
-                    // the indexed float variants ([0]/[1]/[2]) do NOT exist as separate
-                    // properties and silently return 0.0.
+                    // Velocity — in CS2 demos m_vecVelocity on player pawns is NOT
+                    // networked reliably (often reads as (0,0,0) every tick), which
+                    // made every shot appear stationary → counter-strafe always 100%.
                     //
-                    // IMPORTANT: always assign vel_x/y/z every tick, even when zero.
-                    // The snapshot is reused across ticks (entry().or_default()), so a
-                    // conditional write would leave stale values when a player stops —
-                    // making a stationary shot appear as moving.
+                    // FIX: compute velocity from XYZ position deltas tick-to-tick.
+                    // CS2 demos run at 64 Hz → dt = 1/64 s. We only trust the delta
+                    // when 1 ≤ dt_ticks ≤ 4; larger gaps usually mean a respawn or
+                    // a paused parser and would produce a giant velocity spike.
+                    //
+                    // m_vecVelocity is kept as a fallback in case a future demo
+                    // format does network it correctly.
                     {
-                        let vel3 = get_vec3(entity, "m_vecVelocity");
-                        // vec3 path: primary (CS2 default)
-                        // indexed float path: fallback for unusual demo formats
-                        let (vx, vy, vz) = if vel3[0] != 0.0 || vel3[1] != 0.0 || vel3[2] != 0.0 {
-                            (vel3[0], vel3[1], vel3[2])
-                        } else {
-                            // Could still be (0,0,0) if the player is truly stationary —
-                            // that is the correct value and must be assigned.
-                            let fx = get_f32(entity, "m_vecVelocity[0]");
-                            let fy = get_f32(entity, "m_vecVelocity[1]");
-                            let fz = get_f32(entity, "m_vecVelocity[2]");
-                            (fx, fy, fz)
-                        };
+                        let curr_tick = ctx.tick() as u32;
+                        let curr_pos = [snap.x, snap.y, snap.z];
+
+                        let mut vx = 0.0_f32;
+                        let mut vy = 0.0_f32;
+                        let mut vz = 0.0_f32;
+
+                        if let Some(&(prev_tick, prev_xyz)) = self.prev_pos.get(&idx) {
+                            let dt_ticks = curr_tick.saturating_sub(prev_tick);
+                            if dt_ticks >= 1 && dt_ticks <= 4 {
+                                let dt = dt_ticks as f32 / 64.0;
+                                vx = (curr_pos[0] - prev_xyz[0]) / dt;
+                                vy = (curr_pos[1] - prev_xyz[1]) / dt;
+                                vz = (curr_pos[2] - prev_xyz[2]) / dt;
+                            }
+                        }
+
+                        // Fallback: if delta gave nothing (first tick / large gap)
+                        // try the networked m_vecVelocity. Often (0,0,0) on player
+                        // pawns but harmless when so.
+                        if vx == 0.0 && vy == 0.0 && vz == 0.0 {
+                            let vel3 = get_vec3(entity, "m_vecVelocity");
+                            vx = vel3[0];
+                            vy = vel3[1];
+                            vz = vel3[2];
+                        }
+
                         snap.vel_x = vx;
                         snap.vel_y = vy;
                         snap.vel_z = vz;
+
+                        // Update prev_pos AFTER computing the delta. Skip GOTV
+                        // pawns (Z > 500) so they don't pollute the table.
+                        if snap.z <= 500.0 && (curr_pos[0] != 0.0 || curr_pos[1] != 0.0) {
+                            self.prev_pos.insert(idx, (curr_tick, curr_pos));
+                        }
                     }
 
                     // Flash duration — always overwrite so it resets to 0 when flash expires.
@@ -2376,12 +2427,26 @@ pub mod commands {
                                 };
                                 let was_moving_before = max_pre_speed >= 50.0;
 
-                                self.last_weapon_fire.insert(shooter_ctrl, WeaponFireInfo {
-                                    tick: fire_tick,
-                                    speed_at_shot,
-                                    counter_strafe_score,
-                                    was_moving_before,
-                                });
+                                // FIRST-SHOT semantics: only record when this is the
+                                // first bullet of a new burst. Per user feedback the
+                                // counter-strafe score must reflect the *first* shot,
+                                // not the last (which is usually stationary because
+                                // the player has finished spraying by then).
+                                //
+                                // "New burst" = no prior fire OR previous fire was
+                                // >32 ticks (~500 ms) ago.
+                                let is_new_burst = match self.last_weapon_fire.get(&shooter_ctrl) {
+                                    None => true,
+                                    Some(prev) => fire_tick.saturating_sub(prev.tick) > 32,
+                                };
+                                if is_new_burst {
+                                    self.last_weapon_fire.insert(shooter_ctrl, WeaponFireInfo {
+                                        tick: fire_tick,
+                                        speed_at_shot,
+                                        counter_strafe_score,
+                                        was_moving_before,
+                                    });
+                                }
                             }
                         }
                     }
@@ -2548,6 +2613,11 @@ pub mod commands {
 
                         // Update kill tracking for future trade detection
                         self.last_kill_tick.insert(killer_ctrl, tick);
+
+                        // Clear the victim's last_weapon_fire so their NEXT life
+                        // starts fresh — otherwise a stale entry from before they
+                        // died could leak into the first shot of the new round.
+                        self.last_weapon_fire.remove(&victim_ctrl);
 
                         // Assister info
                         let assister_name = if assister_ctrl > 0 {
@@ -3251,10 +3321,21 @@ pub mod commands {
             })
             .await
             .map_err(|e| format!("Parser task crashed: {e}"))?;
-        if let Err(ref e) = result {
-            log_parse_failure("parse_demo_deaths", &fp, e);
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                log_parse_failure("parse_demo_deaths", &fp, &e);
+                // Isolated panics in source2-demo mean THIS demo is incompatible
+                // with the current parser. Returning empty (instead of Err) lets
+                // the frontend render a "no data" state and lets the parse queue
+                // move on without showing an error toast for a known-bad demo.
+                if e.contains("(isolated)") {
+                    Ok(Vec::new())
+                } else {
+                    Err(e)
+                }
+            }
         }
-        result
     }
 
     fn parse_demo_deaths_inner(
@@ -3309,10 +3390,29 @@ pub mod commands {
             })
             .await
             .map_err(|e| format!("Parser task crashed: {e}"))?;
-        if let Err(ref e) = result {
-            log_parse_failure("parse_demo_stats", &fp, e);
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                log_parse_failure("parse_demo_stats", &fp, &e);
+                // See parse_demo_deaths above: isolated panics → return empty
+                // DemoStats so the scoreboard shows a "no data" state instead
+                // of an error toast for a demo that's known-incompatible.
+                if e.contains("(isolated)") {
+                    Ok(super::DemoStats {
+                        players: Vec::new(),
+                        rounds: 0,
+                        map_name: String::new(),
+                        source: "incompatible".to_string(),
+                        trade_window_ticks: 320,
+                        kills: Vec::new(),
+                        damages: Vec::new(),
+                        round_rows: Vec::new(),
+                    })
+                } else {
+                    Err(e)
+                }
+            }
         }
-        result
     }
 
     fn parse_demo_stats_inner(filepath: String) -> Result<super::DemoStats, String> {
