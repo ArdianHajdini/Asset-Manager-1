@@ -389,6 +389,41 @@ pub mod commands {
         dir.join("easyDemo_parse_errors.log")
     }
 
+    /// FACEIT demo downloads sometimes carry the match-start timestamp in
+    /// the filename as a `_<unix_ms>` (or `_<unix_secs>`) suffix, e.g.
+    /// `1-<uuid>-1-1.dem_1778623174759.zst`. Pull that out so we can show
+    /// the user the actual time the match was played, not just the file's
+    /// disk timestamps.
+    fn extract_match_ts_from_filename(filepath: &str) -> Option<u64> {
+        let name = Path::new(filepath).file_name()?.to_string_lossy().into_owned();
+        let bytes = name.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'_' {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len() && bytes[end].is_ascii_digit() {
+                    end += 1;
+                }
+                let digits = &name[start..end];
+                if (10..=13).contains(&digits.len()) {
+                    if let Ok(n) = digits.parse::<u64>() {
+                        // 10 digits = seconds, 13 digits = milliseconds
+                        let secs = if digits.len() >= 13 { n / 1000 } else { n };
+                        // Sanity range: 2015-01-01 .. 2050-01-01
+                        if (1_420_070_400..2_524_608_000).contains(&secs) {
+                            return Some(secs);
+                        }
+                    }
+                }
+                i = end.max(i + 1);
+            } else {
+                i += 1;
+            }
+        }
+        None
+    }
+
     /// Append a structured failure entry to the parse-error log next to the
     /// exe. Always silent on failure — never bubble up.
     pub(crate) fn log_parse_failure(command: &str, filepath: &str, err: &str) {
@@ -401,32 +436,49 @@ pub mod commands {
             .unwrap_or(0);
         let ts = format_utc(secs);
 
-        // Pull a few extra context bits the user/we will want when reading
-        // the log: app version, demo file size, demo mtime. All best-effort.
         let app_version = env!("CARGO_PKG_VERSION");
-        let (file_size, file_mtime) = match fs::metadata(filepath) {
-            Ok(meta) => {
-                let size = meta.len();
-                let mtime_secs = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                (size, format_utc(mtime_secs))
-            }
-            Err(_) => (0, "<file metadata unavailable>".to_string()),
+
+        // Three timestamps we want in the log, most useful first:
+        //
+        //   match_started — best estimate of when the actual game started.
+        //                   Tries:
+        //                     (1) FACEIT filename suffix `_<unix_ms>`
+        //                     (2) file birth/creation time (Windows: real;
+        //                         Linux: often equal to mtime)
+        //   demo_modified — file mtime; for a Steam-recorded demo this is
+        //                   roughly when the match ENDED.
+        //   demo_size     — handy for "is this a partial / truncated file?"
+        let fmt_ts = |t: std::io::Result<SystemTime>| -> String {
+            t.ok()
+                .and_then(|st| st.duration_since(UNIX_EPOCH).ok())
+                .map(|d| format_utc(d.as_secs()))
+                .unwrap_or_else(|| "<unavailable>".to_string())
+        };
+
+        let (file_size, demo_modified, demo_created) = match fs::metadata(filepath) {
+            Ok(meta) => (meta.len(), fmt_ts(meta.modified()), fmt_ts(meta.created())),
+            Err(_) => (
+                0,
+                "<file metadata unavailable>".to_string(),
+                "<file metadata unavailable>".to_string(),
+            ),
+        };
+
+        let match_started = match extract_match_ts_from_filename(filepath) {
+            Some(s) => format!("{} (from filename)", format_utc(s)),
+            None => format!("{} (file birth time — best estimate)", demo_created),
         };
 
         let entry = format!(
-            "===== {ts} =====\n\
-             command:      {command}\n\
-             app_version:  {app_version}\n\
-             os:           {os}\n\
-             demo_path:    {filepath}\n\
-             demo_size:    {file_size} bytes\n\
-             demo_mtime:   {file_mtime}\n\
-             error:        {err}\n\n",
+            "===== logged {ts} =====\n\
+             command:        {command}\n\
+             app_version:    {app_version}\n\
+             os:             {os}\n\
+             demo_path:      {filepath}\n\
+             demo_size:      {file_size} bytes\n\
+             match_started:  {match_started}\n\
+             demo_modified:  {demo_modified}\n\
+             error:          {err}\n\n",
             os = std::env::consts::OS,
         );
 
