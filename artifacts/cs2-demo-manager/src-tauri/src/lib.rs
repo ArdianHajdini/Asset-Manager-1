@@ -317,7 +317,7 @@ pub mod commands {
     // converted into a normal `Err(String)` returned to the frontend. The
     // queue keeps moving, the user sees a clear error per failed demo, and
     // the app stays alive.
-    fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    pub(crate) fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
         if let Some(s) = payload.downcast_ref::<&'static str>() {
             (*s).to_string()
         } else if let Some(s) = payload.downcast_ref::<String>() {
@@ -327,17 +327,60 @@ pub mod commands {
         }
     }
 
+    // ── Panic backtrace capture ────────────────────────────────────
+    //
+    // `catch_unwind` only gives us the panic message — not where it
+    // happened. For source2-demo "index out of bounds" panics that's
+    // useless: we get the same generic string regardless of which
+    // observer/function inside the crate panicked.
+    //
+    // Workaround: install a panic hook ONCE at startup. The hook runs
+    // BEFORE catch_unwind unwinds the stack, so we can grab the location
+    // (file:line:col) and a full backtrace and stash them in a
+    // thread-local. `safe_call_sync` reads + clears the thread-local
+    // after catch_unwind returns Err and includes both in the error
+    // string surfaced to the log.
+    use std::cell::RefCell;
+    thread_local! {
+        static LAST_PANIC_INFO: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn install_panic_hook_once() {
+        use std::backtrace::Backtrace;
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            std::panic::set_hook(Box::new(|info| {
+                let loc = info
+                    .location()
+                    .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                    .unwrap_or_else(|| "<unknown location>".to_string());
+                let bt = Backtrace::force_capture().to_string();
+                let combined = format!("at {loc}\nbacktrace:\n{bt}");
+                LAST_PANIC_INFO.with(|c| *c.borrow_mut() = Some(combined));
+                // Intentionally do NOT chain to the previous hook — we
+                // don't want the default stderr dump for caught panics.
+            }));
+        });
+    }
+
     fn safe_call_sync<T>(
         name: &str,
         f: impl FnOnce() -> Result<T, String>,
     ) -> Result<T, String> {
         use std::panic::{catch_unwind, AssertUnwindSafe};
+        install_panic_hook_once();
+        // Clear any stale info from a previous panic on this thread.
+        LAST_PANIC_INFO.with(|c| c.borrow_mut().take());
         match catch_unwind(AssertUnwindSafe(f)) {
             Ok(r) => r,
             Err(payload) => {
                 let msg = panic_payload_to_string(payload);
-                eprintln!("[CS2DM] {name} PANICKED: {msg}");
-                Err(format!("Demo parser crashed (isolated): {msg}"))
+                let extra = LAST_PANIC_INFO
+                    .with(|c| c.borrow_mut().take())
+                    .unwrap_or_else(|| "<no backtrace captured>".to_string());
+                eprintln!("[CS2DM] {name} PANICKED: {msg}\n{extra}");
+                Err(format!("Demo parser crashed (isolated): {msg}\n{extra}"))
             }
         }
     }
