@@ -2456,8 +2456,11 @@ pub mod commands {
                         self.current_round += 1;
                     }
                     "weapon_fire" => {
-                        if !self.match_started || self.current_round == 0 {
-                            return Ok(());
+                        if !self.match_started {
+                            self.match_started = true;
+                        }
+                        if self.current_round == 0 {
+                            self.current_round = 1;
                         }
 
                         // Track the shooter's velocity at the exact moment they fired.
@@ -2541,8 +2544,11 @@ pub mod commands {
                         }
                     }
                     "player_death" => {
-                        if !self.match_started || self.current_round == 0 {
-                            return Ok(());
+                        if !self.match_started {
+                            self.match_started = true;
+                        }
+                        if self.current_round == 0 {
+                            self.current_round = 1;
                         }
 
                         let weapon: String = event
@@ -2983,7 +2989,28 @@ pub mod commands {
                         }
                     }
                     "player_death" => {
-                        if !self.match_started || self.current_round == 0 { return Ok(()); }
+                        if !self.match_started {
+                            self.match_started = true;
+                        }
+                        if self.current_round == 0 {
+                            self.current_round = 1;
+                            self.round_open = true;
+                            self.round_start_tick = tick;
+                            let mut snap: HashMap<String, u8> = HashMap::new();
+                            for (ctrl_idx, sid) in self.ctrl_steamid.iter() {
+                                let team = self.ctrl_team.get(ctrl_idx).copied().unwrap_or(0);
+                                if team == 2 || team == 3 {
+                                    snap.insert(sid.clone(), team);
+                                }
+                            }
+                            self.round_participants.push(snap);
+                            self.round_rows.push(super::super::StatsRoundRow {
+                                round: self.current_round,
+                                start_tick: tick,
+                                end_tick: 0,
+                                winner_team: 0,
+                            });
+                        }
 
                         let raw_userid: i32 = event.get_value("userid")
                             .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(0);
@@ -3024,7 +3051,28 @@ pub mod commands {
                         });
                     }
                     "player_hurt" => {
-                        if !self.match_started || self.current_round == 0 { return Ok(()); }
+                        if !self.match_started {
+                            self.match_started = true;
+                        }
+                        if self.current_round == 0 {
+                            self.current_round = 1;
+                            self.round_open = true;
+                            self.round_start_tick = tick;
+                            let mut snap: HashMap<String, u8> = HashMap::new();
+                            for (ctrl_idx, sid) in self.ctrl_steamid.iter() {
+                                let team = self.ctrl_team.get(ctrl_idx).copied().unwrap_or(0);
+                                if team == 2 || team == 3 {
+                                    snap.insert(sid.clone(), team);
+                                }
+                            }
+                            self.round_participants.push(snap);
+                            self.round_rows.push(super::super::StatsRoundRow {
+                                round: self.current_round,
+                                start_tick: tick,
+                                end_tick: 0,
+                                winner_team: 0,
+                            });
+                        }
 
                         let raw_userid: i32 = event.get_value("userid")
                             .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(0);
@@ -3211,14 +3259,26 @@ pub mod commands {
                 if !d.victim_id.is_empty() { set.insert(d.victim_id.clone()); }
             }
 
-            // KAST per round — count only COMPLETED rounds (end_tick > 0).
-            // A round_start without a matching round_end (truncated demo, last
-            // round of an aborted match) is not "played" for the purpose of
-            // KAST/ADR denominators.
-            let completed_rounds: Vec<u32> = obs.round_rows.iter()
+            // KAST per round. Prefer completed rounds (end_tick > 0), but some
+            // CS2/SourceTV demos expose kill/damage events without reliable
+            // round_end events. In that case, fall back to rounds that have
+            // actual combat events so the scoreboard does not collapse to zero.
+            let mut completed_rounds: Vec<u32> = obs.round_rows.iter()
                 .filter(|rr| rr.end_tick > 0)
                 .map(|rr| rr.round)
                 .collect();
+            if completed_rounds.is_empty() {
+                let mut event_rounds: HashSet<u32> = HashSet::new();
+                for k in &kills {
+                    if k.round > 0 { event_rounds.insert(k.round); }
+                }
+                for d in &obs.damages {
+                    if d.round > 0 { event_rounds.insert(d.round); }
+                }
+                completed_rounds = event_rounds.into_iter().collect();
+                completed_rounds.sort_unstable();
+            }
+            let completed_round_set: HashSet<u32> = completed_rounds.iter().copied().collect();
             let total_rounds = completed_rounds.len() as u32;
             for &round_num in &completed_rounds {
                 let kr: Vec<&super::super::StatsKillRow> = kills.iter()
@@ -3231,7 +3291,7 @@ pub mod commands {
                     .map(|k| k.killer_id.clone()).filter(|s| !s.is_empty()).collect();
                 let assisters: HashSet<String> = valid_kr.iter()
                     .map(|k| k.assister_id.clone()).filter(|s| !s.is_empty()).collect();
-                let victims: HashSet<String> = kr.iter()
+                let victims: HashSet<String> = valid_kr.iter()
                     .map(|k| k.victim_id.clone()).filter(|s| !s.is_empty()).collect();
                 let traded_victims: HashSet<String> = valid_kr.iter()
                     .filter(|k| k.is_trade).map(|k| k.victim_id.clone()).collect();
@@ -3281,12 +3341,11 @@ pub mod commands {
                 }
             };
 
-            // Only count completed rounds (matching round_rows[i].end_tick > 0).
+            // Count rounds selected above: completed rounds when available,
+            // otherwise combat-event rounds from the fallback path.
             for (i, parts) in obs.round_participants.iter().enumerate() {
-                let is_completed = obs.round_rows.get(i)
-                    .map(|rr| rr.end_tick > 0).unwrap_or(false);
-                if !is_completed { continue; }
                 let round_num = (i as u32) + 1;
+                if !completed_round_set.contains(&round_num) { continue; }
                 for (sid, team) in parts.iter() {
                     count_round_once(sid, round_num, *team, &mut players, &ensure);
                 }
