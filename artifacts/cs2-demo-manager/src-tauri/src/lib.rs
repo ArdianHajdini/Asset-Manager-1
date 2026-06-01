@@ -2249,6 +2249,12 @@ pub mod commands {
                 .and_then(|v| TryInto::<u32>::try_into(v).ok())
                 .unwrap_or(0_u32)
         }
+        fn get_u32_opt(entity: &Entity, name: &str) -> Option<u32> {
+            entity
+                .get_property_by_name(name)
+                .ok()
+                .and_then(|v| TryInto::<u32>::try_into(v).ok())
+        }
 
         fn get_str(entity: &Entity, name: &str) -> String {
             entity
@@ -2880,6 +2886,13 @@ pub mod commands {
                 .and_then(|v| TryInto::<u64>::try_into(v).ok())
                 .unwrap_or(0)
         }
+        /// Like get_u32 but returns None when the property is not present in the
+        /// current delta snapshot (e.g. skipped by delta compression). Use this
+        /// for properties whose value 0 is semantically meaningful.
+        fn get_u32_opt(entity: &Entity, path: &str) -> Option<u32> {
+            entity.get_property_by_name(path).ok()
+                .and_then(|v| TryInto::<u32>::try_into(v).ok())
+        }
         fn weapon_name(raw: &str) -> String {
             raw.trim_start_matches("weapon_").to_string()
         }
@@ -2903,6 +2916,11 @@ pub mod commands {
                 pub round_open:    bool,
                 pub round_start_tick: u32,
 
+                // Fallback: last value of CCSGameRulesProxy.m_iRoundWinStatus.
+                // 0 = round in progress / no result; 1-8 = winner side;
+                // transition 0→non-zero signals round end when round_end event is missing.
+                pub round_win_status: u8,
+
             // Output rows (filled by event handlers)
             pub kills:         Vec<super::super::StatsKillRow>,
             pub damages:       Vec<super::super::StatsDamageRow>,
@@ -2923,6 +2941,7 @@ pub mod commands {
                     synthetic_round: false,
                     round_open:    false,
                     round_start_tick: 0,
+                    round_win_status: 0,
                     kills:         Vec::new(),
                     damages:       Vec::new(),
                     round_rows:    Vec::new(),
@@ -2936,28 +2955,61 @@ pub mod commands {
         #[uses_game_events]
         impl StatsObserver {
             #[on_entity]
-            fn handle_entity(&mut self, _ctx: &Context, entity: &Entity) -> ObserverResult {
+            fn handle_entity(&mut self, ctx: &Context, entity: &Entity) -> ObserverResult {
                 let class = entity.class().name();
-                if class != "CCSPlayerController" { return Ok(()); }
-
                 let idx = entity.index();
-                let name = get_str(entity, "m_iszPlayerName");
-                let steamid = get_u64(entity, "m_steamID");
-                let team = get_u32(entity, "m_iTeamNum") as u8;
 
-                // Skip GOTV / SourceTV (steamid 0 or below the real Steam ID range)
-                let is_real = steamid > 76_561_197_960_265_728;
-                if is_real {
-                    self.ctrl_steamid.insert(idx, steamid.to_string());
+                if class == "CCSPlayerController" {
+                    let name = get_str(entity, "m_iszPlayerName");
+                    let steamid = get_u64(entity, "m_steamID");
+                    let team = get_u32(entity, "m_iTeamNum") as u8;
+
+                    // Skip GOTV / SourceTV (steamid 0 or below the real Steam ID range)
+                    let is_real = steamid > 76_561_197_960_265_728;
+                    if is_real {
+                        self.ctrl_steamid.insert(idx, steamid.to_string());
+                    }
+                    if !name.is_empty() && is_real {
+                        self.ctrl_name.insert(idx, name);
+                    }
+                    // Always track team — even if we haven't confirmed steamid yet,
+                    // the team at the moment of the next round_start matters.
+                    if team == 2 || team == 3 || team == 1 {
+                        self.ctrl_team.insert(idx, team);
+                    }
                 }
-                if !name.is_empty() && is_real {
-                    self.ctrl_name.insert(idx, name);
+
+                // CCSGameRulesProxy.m_iRoundWinStatus fallback for missing round_end events.
+                // The Go reference (cs-demo-analyzer) uses the same entity-property approach.
+                // 0 = no result / round in progress; non-zero = round ended with a winner.
+                // Transition 0→non-zero → round end; non-zero→0 → ready for next round.
+                // Uses get_u32_opt to skip delta snapshots where this property is absent
+                // (otherwise get_u32 returns 0 and falsely signals a reset).
+                if class == "CCSGameRulesProxy" {
+                    let status = get_u32_opt(entity, "m_iRoundWinStatus")
+                        .or_else(|| get_u32_opt(entity, "cs_gamerules_data.m_iRoundWinStatus"))
+                        .map(|v| v as u8);
+                    if let Some(st) = status {
+                        if st == 0 && self.round_win_status > 0 {
+                            // non-zero → 0: round result cleared, ready for next round.
+                        } else if st > 0 && self.round_win_status == 0 {
+                            // 0 → non-zero: round ended. Only act if no round_end event
+                            // already closed this round (round_open guard).
+                            if self.match_started && self.round_open {
+                                let tick = ctx.tick() as u32;
+                                self.round_open = false;
+                                if let Some(rr) = self.round_rows.last_mut() {
+                                    if rr.end_tick == 0 {
+                                        rr.end_tick = tick;
+                                        rr.winner_team = st;
+                                    }
+                                }
+                            }
+                        }
+                        self.round_win_status = st;
+                    }
                 }
-                // Always track team — even if we haven't confirmed steamid yet,
-                // the team at the moment of the next round_start matters.
-                if team == 2 || team == 3 || team == 1 {
-                    self.ctrl_team.insert(idx, team);
-                }
+
                 Ok(())
             }
 
