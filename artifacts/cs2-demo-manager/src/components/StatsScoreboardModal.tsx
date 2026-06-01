@@ -17,7 +17,7 @@ interface StatsScoreboardModalProps {
 type SideFilter = "all" | "t" | "ct";
 type SortKey =
   | "name" | "kills" | "deaths" | "assists" | "kd" | "adr" | "hs"
-  | "kast" | "entryK" | "entryD" | "utility";
+  | "kast" | "entryK" | "entryD" | "utility" | "rating";
 
 interface DerivedRow {
   raw: TauriPlayerStats;
@@ -25,6 +25,7 @@ interface DerivedRow {
   adr: number;
   hsPct: number | null;   // null when not available for the active side filter
   kastPct: number | null; // null when not available for the active side filter
+  rating: number | null;  // null when not available for the active side filter
 }
 
 function deriveRow(p: TauriPlayerStats, side: SideFilter): DerivedRow {
@@ -52,12 +53,15 @@ function deriveRow(p: TauriPlayerStats, side: SideFilter): DerivedRow {
     : p.roundsPlayed === 0 ? 0 : (p.kastRounds / p.roundsPlayed) * 100;
 
   // Replace base aggregates with the side-filtered values for display
+  const rating = side !== "all" ? null : p.rating;
+
   return {
     raw: { ...p, kills, deaths, damageDealt: damage, roundsPlayed: rounds },
     kd,
     adr,
     hsPct,
     kastPct,
+    rating,
   };
 }
 
@@ -74,6 +78,7 @@ function compare(a: DerivedRow, b: DerivedRow, key: SortKey): number {
     case "entryK": return b.raw.entryKills - a.raw.entryKills;
     case "entryD": return b.raw.entryDeaths - a.raw.entryDeaths;
     case "utility":return b.raw.utilityDamage - a.raw.utilityDamage;
+    case "rating": return (b.rating ?? -1) - (a.rating ?? -1);
   }
 }
 
@@ -284,6 +289,7 @@ export function StatsScoreboardModal({
                     <SortHeader keyName="adr"     label="ADR"   tooltip="Average Damage per Round" />
                     <SortHeader keyName="hs"      label="HS%"   tooltip="Headshot kill percentage (overall — only shown when side filter = Both)" />
                     <SortHeader keyName="kast"    label="KAST%" tooltip="Rounds with Kill / Assist / Survive / Trade (overall — only shown when side filter = Both)" />
+                    <SortHeader keyName="rating"  label="Rtg"   tooltip="HLTV 2.0 Rating (overall — only shown when side filter = Both)" />
                     <SortHeader keyName="entryK"  label="EK"    tooltip="Entry Kills (first kill of the round)" />
                     <SortHeader keyName="entryD"  label="ED"    tooltip="Entry Deaths (first to die in the round)" />
                     <SortHeader keyName="utility" label="UD"    tooltip="Utility Damage (grenades)" />
@@ -313,6 +319,11 @@ export function StatsScoreboardModal({
                       <td className="px-2 py-1.5 text-right text-white/70 tabular-nums">
                         {r.kastPct === null ? <span className="text-white/25">—</span> : `${r.kastPct.toFixed(0)}%`}
                       </td>
+                      <td className="px-2 py-1.5 text-right text-white/85 tabular-nums font-semibold">
+                        {r.rating === null
+                          ? <span className="text-white/25">—</span>
+                          : r.rating.toFixed(2)}
+                      </td>
                       <td className="px-2 py-1.5 text-right text-white/55 tabular-nums">{r.raw.entryKills}</td>
                       <td className="px-2 py-1.5 text-right text-white/55 tabular-nums">{r.raw.entryDeaths}</td>
                       <td className="px-2 py-1.5 text-right text-white/55 tabular-nums">{r.raw.utilityDamage}</td>
@@ -323,7 +334,7 @@ export function StatsScoreboardModal({
                   ))}
                   {rows.length === 0 && (
                     <tr>
-                      <td colSpan={13} className="text-center py-8 text-white/30 italic">
+                      <td colSpan={14} className="text-center py-8 text-white/30 italic">
                         No players found for this side filter.
                       </td>
                     </tr>

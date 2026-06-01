@@ -344,6 +344,12 @@ export interface TauriPlayerStats {
   kastRounds: number;
   entryKills: number;
   entryDeaths: number;
+  oneKillRounds: number;
+  twoKillRounds: number;
+  threeKillRounds: number;
+  fourKillRounds: number;
+  fiveKillRounds: number;
+  rating: number;
   tKills: number;
   tDeaths: number;
   tDamage: number;
@@ -366,6 +372,7 @@ export interface TauriStatsKillRow {
   victimTeam: number;
   isEntry: boolean;
   isTrade: boolean;
+  isTradeKill: boolean;
 }
 
 export interface TauriStatsDamageRow {

@@ -188,6 +188,14 @@ pub struct PlayerStats {
     /// First-kill of round counts (where this player was the killer / victim).
     pub entry_kills: u32,
     pub entry_deaths: u32,
+    /// Multi-kill round counts.
+    pub one_kill_rounds: u32,
+    pub two_kill_rounds: u32,
+    pub three_kill_rounds: u32,
+    pub four_kill_rounds: u32,
+    pub five_kill_rounds: u32,
+    /// HLTV 2.0 Rating (computed from per-round aggregates).
+    pub rating: f64,
     /// Per-side splits (team at the tick of each event).
     pub t_kills: u32,
     pub t_deaths: u32,
@@ -214,6 +222,7 @@ pub struct StatsKillRow {
     pub victim_team: u8,
     pub is_entry: bool,
     pub is_trade: bool,
+    pub is_trade_kill: bool,
 }
 
 /// One row in the raw damages table (debug export).
@@ -3187,6 +3196,7 @@ pub mod commands {
                             victim_team,
                             is_entry: false, // computed in post-aggregation
                             is_trade: false, // computed in post-aggregation
+                            is_trade_kill: false, // computed in post-aggregation
                         });
                     }
                     "player_hurt" => {
@@ -3299,6 +3309,8 @@ pub mod commands {
             // Mark trade kills: K1 was traded if there exists a later K2 within
             // TRADE_WINDOW_TICKS where K2.killer is on K1.victim's team and
             // K2.victim == K1.killer.
+            // is_trade = true  on K1 ("this kill was traded" / trade death)
+            // is_trade_kill = true on K2 ("this kill was a trade" / avenger).
             for i in 0..kills.len() {
                 if !is_valid_enemy_kill(&kills[i]) { continue; }
                 let k1_tick = kills[i].tick;
@@ -3312,6 +3324,7 @@ pub mod commands {
                         && kills[j].victim_id == k1_killer
                     {
                         kills[i].is_trade = true;
+                        kills[j].is_trade_kill = true;
                         break;
                     }
                 }
@@ -3517,6 +3530,46 @@ pub mod commands {
                         count_round_once(sid, round_num, team, &mut players, &ensure);
                     }
                 }
+            }
+
+            // ── Multi-kill round counting ──
+            // For each completed round, count valid kills per player and
+            // classify as 1k/2k/3k/4k/5k.
+            {
+                let mut kill_counts: HashMap<(String, u32), u32> = HashMap::new();
+                for k in &kills {
+                    if !is_valid_enemy_kill(k) { continue; }
+                    if !completed_round_set.contains(&k.round) { continue; }
+                    *kill_counts.entry((k.killer_id.clone(), k.round)).or_insert(0) += 1;
+                }
+                for ((sid, _round), count) in &kill_counts {
+                    ensure(&mut players, sid);
+                    let p = players.get_mut(sid).unwrap();
+                    match count {
+                        1 => p.one_kill_rounds += 1,
+                        2 => p.two_kill_rounds += 1,
+                        3 => p.three_kill_rounds += 1,
+                        4 => p.four_kill_rounds += 1,
+                        _ if *count >= 5 => p.five_kill_rounds += 1,
+                        _ => {}
+                    }
+                }
+            }
+
+            // ── HLTV 2.0 Rating ──
+            // Impact  = 2.13 * KPR + 0.42 * APR - 0.41
+            // Rating2 = 0.0073 * KAST% + 0.3591 * KPR - 0.5329 * DPR
+            //           + 0.2372 * Impact + 0.0032 * ADR + 0.1587
+            for p in players.values_mut() {
+                let rnd = p.rounds_played.max(1) as f64;
+                let kpr = p.kills as f64 / rnd;
+                let apr = p.assists as f64 / rnd;
+                let dpr = p.deaths as f64 / rnd;
+                let adr = p.damage_dealt as f64 / rnd;
+                let kast = p.kast_rounds as f64 / rnd;
+                let impact = 2.13 * kpr + 0.42 * apr - 0.41;
+                p.rating = 0.0073 * kast + 0.3591 * kpr - 0.5329 * dpr
+                    + 0.2372 * impact + 0.0032 * adr + 0.1587;
             }
 
             // Drop "phantom" players (steam_id was empty) and sort by kills desc.
