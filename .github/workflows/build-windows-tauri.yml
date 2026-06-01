@@ -2,7 +2,7 @@ name: Build CS2 Demo Manager (Windows)
 
 on:
   push:
-    branches: [main]
+    branches: [main, fix/stats-round-denominator-and-ff]
     paths:
       - "artifacts/cs2-demo-manager/**"
       - ".github/workflows/build-windows-tauri.yml"
