@@ -1302,7 +1302,9 @@ pub mod commands {
 
         /// Collects `CCSPlayerController` entities while the demo is parsed.
         ///
-        /// Key: entity.index() (0-based) — this is the voice_mute slot number.
+        /// Key: entity.index() (1-based entity handle) — voice_mute slot = entity.index() - 1.
+        /// The CDemoStringTables fallback also produces 0-based slots, so subtracting
+        /// 1 from the 1-based entity index gives the same 0-based slot convention.
         pub struct Cs2SlotObserver {
             pub players: std::collections::HashMap<u32, PlayerEntry>,
         }
@@ -1364,9 +1366,10 @@ pub mod commands {
                     String::new()
                 };
 
-                // CS2 voice slot = entity index − 1 (0-based player_slot).
+                // CS2 voice slot = entity.index() − 1.
                 // entity.index() is the 1-based entity handle from the demo
                 // stream; tv_listen_voice_indices bit N = player slot N (0-based).
+                // Subtract 1 to convert to 0-based slot.
                 let voice_slot = entity.index().saturating_sub(1);
                 self.players
                     .insert(voice_slot, PlayerEntry { xuid, name, team_num });
@@ -1378,7 +1381,7 @@ pub mod commands {
     /// Parse players from a CS2 demo using the source2-demo entity observer.
     ///
     /// Returns a `Vec<DemoPlayer>` where every player has:
-    ///   - `entity_id`  = `entity.index()` (the 0-based voice_mute slot directly)
+    ///   - `entity_id`  = `entity.index() - 1` (0-based voice_mute slot)
     ///   - `team_num`   = 2 (T) or 3 (CT) from the entity's final state
     ///   - `xuid`       = SteamID64 string (> 76_561_197_960_265_728), or ""
     ///                    for FACEIT proxy accounts / bots whose `m_steamID`
@@ -2154,11 +2157,18 @@ pub mod commands {
             pub ctrl_team: HashMap<u32, u8>,
             pub current_round: u32,
             pub match_started: bool,
+            /// True when round 1 was created synthetically from a combat event
+            /// before a real round_start was seen. Prevents double increment
+            /// when the real round_start arrives.
+            pub synthetic_round: bool,
             /// CS2 map name read from the demo file header (e.g. "de_dust2").
             pub map_name: String,
-            /// Filter: only keep events where victim_name OR killer_name == this string.
+            /// Filter: only keep events where victim_name OR killer_name matches this name.
             /// Empty string = keep all events.
             pub target_player_name: String,
+            /// Filter: also match by steam ID for stable identity across FACEIT name changes.
+            /// Empty string = no steam ID filter.
+            pub target_steam_id: String,
             /// controller entity_index → tick of their most recent kill (for trade detection)
             pub last_kill_tick: HashMap<u32, u32>,
             /// pawn entity_index → recent (tick, horizontal_speed) samples.
@@ -2191,8 +2201,10 @@ pub mod commands {
                     ctrl_team: HashMap::new(),
                     current_round: 0,
                     match_started: false,
+                    synthetic_round: false,
                     map_name: String::new(),
                     target_player_name: String::new(),
+                    target_steam_id: String::new(),
                     last_kill_tick: HashMap::new(),
                     pawn_vel_history: HashMap::new(),
                     last_weapon_fire: HashMap::new(),
@@ -2453,7 +2465,13 @@ pub mod commands {
                             self.last_kill_tick.clear();
                             self.last_weapon_fire.clear();
                         }
-                        self.current_round += 1;
+                        if self.synthetic_round {
+                            // Synthetic round 1 was already created from a
+                            // combat event — don't double-increment.
+                            self.synthetic_round = false;
+                        } else {
+                            self.current_round += 1;
+                        }
                     }
                     "weapon_fire" => {
                         if !self.match_started {
@@ -2461,6 +2479,7 @@ pub mod commands {
                         }
                         if self.current_round == 0 {
                             self.current_round = 1;
+                            self.synthetic_round = true;
                         }
 
                         // Track the shooter's velocity at the exact moment they fired.
@@ -2470,7 +2489,7 @@ pub mod commands {
                             .ok()
                             .and_then(|v| TryInto::<i32>::try_into(v).ok())
                             .unwrap_or(0);
-                        let shooter_ctrl = (raw_userid as u32) & 0x3FFF;
+                        let shooter_ctrl = raw_userid.max(0) as u32;
                         let fire_tick = ctx.tick() as u32;
 
                         if let Some(&pawn_idx) = self.ctrl_to_pawn.get(&shooter_ctrl) {
@@ -2549,6 +2568,7 @@ pub mod commands {
                         }
                         if self.current_round == 0 {
                             self.current_round = 1;
+                            self.synthetic_round = true;
                         }
 
                         let weapon: String = event
@@ -2600,10 +2620,12 @@ pub mod commands {
                             .and_then(|v| TryInto::<bool>::try_into(v).ok())
                             .unwrap_or(false);
 
-                        let victim_ctrl: u32 = (raw_userid as u32) & 0x3FFF;
-                        let killer_ctrl: u32 = (raw_attacker as u32) & 0x3FFF;
+                        // Game event userid/attacker/assister are entity indices,
+                        // NOT entity handles — no & 0x3FFF masking needed.
+                        let victim_ctrl: u32 = raw_userid.max(0) as u32;
+                        let killer_ctrl: u32 = raw_attacker.max(0) as u32;
                         let assister_ctrl: u32 = if raw_assister > 0 {
-                            (raw_assister as u32) & 0x3FFF
+                            raw_assister as u32
                         } else {
                             0
                         };
@@ -2635,9 +2657,15 @@ pub mod commands {
                             && victim_team == killer_team;
 
                         // Include events where the tracked player is the victim OR the killer.
-                        if !self.target_player_name.is_empty()
-                            && victim_name != self.target_player_name
-                            && killer_name != self.target_player_name
+                        // Match by EITHER name OR steam ID for stable identity.
+                        let matches_target = |name: &str, sid: &str| -> bool {
+                            (!self.target_player_name.is_empty() && name == self.target_player_name)
+                                || (!self.target_steam_id.is_empty() && sid == self.target_steam_id)
+                        };
+                        let target_match = matches_target(&victim_name, &victim_steamid)
+                            || matches_target(&killer_name, &self.ctrl_steamid.get(&killer_ctrl).cloned().unwrap_or_default());
+                        if (!self.target_player_name.is_empty() || !self.target_steam_id.is_empty())
+                            && !target_match
                         {
                             // Still update trade-kill tracking even for skipped events
                             let tick_now = ctx.tick() as u32;
@@ -2646,8 +2674,10 @@ pub mod commands {
                         }
 
                         // true when the tracked player pulled the trigger
-                        let player_is_killer = !self.target_player_name.is_empty()
-                            && killer_name == self.target_player_name;
+                        let player_is_killer = (!self.target_player_name.is_empty()
+                            && killer_name == self.target_player_name)
+                            || (!self.target_steam_id.is_empty()
+                                && self.ctrl_steamid.get(&killer_ctrl).map(|s| s.as_str()) == Some(self.target_steam_id.as_str()));
 
                         // Build a snapshot for a given controller.
                         let get_snap = |ctrl: u32| -> Option<PawnSnapshot> {
@@ -2848,17 +2878,18 @@ pub mod commands {
             )
         }
 
-        pub struct StatsObserver {
-            // Per-controller bookkeeping
-            pub ctrl_steamid: HashMap<u32, String>,
-            pub ctrl_name:    HashMap<u32, String>,
-            pub ctrl_team:    HashMap<u32, u8>,
+            pub struct StatsObserver {
+                // Per-controller bookkeeping
+                pub ctrl_steamid: HashMap<u32, String>,
+                pub ctrl_name:    HashMap<u32, String>,
+                pub ctrl_team:    HashMap<u32, u8>,
 
-            // Round tracking
-            pub current_round: u32,
-            pub match_started: bool,
-            pub round_open:    bool,
-            pub round_start_tick: u32,
+                // Round tracking
+                pub current_round: u32,
+                pub match_started: bool,
+                pub synthetic_round: bool,
+                pub round_open:    bool,
+                pub round_start_tick: u32,
 
             // Output rows (filled by event handlers)
             pub kills:         Vec<super::super::StatsKillRow>,
@@ -2877,6 +2908,7 @@ pub mod commands {
                     ctrl_team:    HashMap::new(),
                     current_round: 0,
                     match_started: false,
+                    synthetic_round: false,
                     round_open:    false,
                     round_start_tick: 0,
                     kills:         Vec::new(),
@@ -2946,7 +2978,12 @@ pub mod commands {
                             self.round_rows.clear();
                             self.round_participants.clear();
                         }
-                        self.current_round += 1;
+                        if self.synthetic_round {
+                            // Round 1 was created from a combat event — don't double-increment.
+                            self.synthetic_round = false;
+                        } else {
+                            self.current_round += 1;
+                        }
                         self.round_open = true;
                         self.round_start_tick = tick;
                         // Snapshot every known controller's team for this round.
@@ -2988,6 +3025,7 @@ pub mod commands {
                         }
                         if self.current_round == 0 {
                             self.current_round = 1;
+                            self.synthetic_round = true;
                             self.round_open = true;
                             self.round_start_tick = tick;
                             let mut snap: HashMap<String, u8> = HashMap::new();
@@ -3018,9 +3056,9 @@ pub mod commands {
                         let headshot: bool = event.get_value("headshot")
                             .ok().and_then(|v| TryInto::<bool>::try_into(v).ok()).unwrap_or(false);
 
-                        let victim_ctrl   = (raw_userid as u32)   & 0x3FFF;
-                        let killer_ctrl   = (raw_attacker as u32) & 0x3FFF;
-                        let assister_ctrl = if raw_assister > 0 { (raw_assister as u32) & 0x3FFF } else { 0 };
+                        let victim_ctrl   = raw_userid.max(0) as u32;
+                        let killer_ctrl   = raw_attacker.max(0) as u32;
+                        let assister_ctrl = if raw_assister > 0 { raw_assister as u32 } else { 0 };
 
                         let killer_id   = self.ctrl_steamid.get(&killer_ctrl).cloned().unwrap_or_default();
                         let victim_id   = self.ctrl_steamid.get(&victim_ctrl).cloned().unwrap_or_default();
@@ -3050,6 +3088,7 @@ pub mod commands {
                         }
                         if self.current_round == 0 {
                             self.current_round = 1;
+                            self.synthetic_round = true;
                             self.round_open = true;
                             self.round_start_tick = tick;
                             let mut snap: HashMap<String, u8> = HashMap::new();
@@ -3083,8 +3122,8 @@ pub mod commands {
                         let hitgroup: i32 = event.get_value("hitgroup")
                             .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(0);
 
-                        let victim_ctrl   = (raw_userid   as u32) & 0x3FFF;
-                        let attacker_ctrl = (raw_attacker as u32) & 0x3FFF;
+                        let victim_ctrl   = raw_userid.max(0) as u32;
+                        let attacker_ctrl = raw_attacker.max(0) as u32;
 
                         let attacker_id = self.ctrl_steamid.get(&attacker_ctrl).cloned().unwrap_or_default();
                         let victim_id   = self.ctrl_steamid.get(&victim_ctrl).cloned().unwrap_or_default();
@@ -3547,6 +3586,7 @@ pub mod commands {
     pub async fn parse_demo_deaths(
         filepath: String,
         player_name: String,
+        player_steam_id: Option<String>,
     ) -> Result<Vec<super::DemoDeathEvent>, String> {
         // Run the heavy CPU-bound work on the blocking thread pool. tokio's
         // spawn_blocking ALSO catches panics and returns them as JoinError —
@@ -3555,7 +3595,7 @@ pub mod commands {
         let result: Result<Vec<super::DemoDeathEvent>, String> =
             tokio::task::spawn_blocking(move || {
                 safe_call_sync("parse_demo_deaths", || {
-                    parse_demo_deaths_inner(filepath, player_name)
+                    parse_demo_deaths_inner(filepath, player_name, player_steam_id)
                 })
             })
             .await
@@ -3580,6 +3620,7 @@ pub mod commands {
     fn parse_demo_deaths_inner(
         filepath: String,
         player_name: String,
+        player_steam_id: Option<String>,
     ) -> Result<Vec<super::DemoDeathEvent>, String> {
         use source2_demo::DemoRunner;
 
@@ -3596,6 +3637,7 @@ pub mod commands {
         {
             let mut obs = collector.borrow_mut();
             obs.target_player_name = player_name;
+            obs.target_steam_id = player_steam_id.unwrap_or_default();
             obs.map_name = map_name;
         }
 

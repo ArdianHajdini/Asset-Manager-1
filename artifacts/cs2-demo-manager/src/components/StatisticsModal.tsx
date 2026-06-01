@@ -753,7 +753,7 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
   const killCount  = allEvents ? allEvents.filter(e =>  e.playerIsKiller).length : 0;
   const deathCount = allEvents ? allEvents.filter(e => !e.playerIsKiller).length : 0;
 
-  async function handleSelectPlayer(name: string) {
+  async function handleSelectPlayer(name: string, steamId?: string) {
     setSelectedPlayer(name);
     setLoading(true);
     setError(null);
@@ -763,7 +763,7 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
     setLowerRadarUrl(null);
 
     try {
-      const result = await tauriParseDemoDeaths(filepath, name);
+      const result = await tauriParseDemoDeaths(filepath, name, steamId);
       setAllEvents(result);
 
       // Load radar image(s) for this map (silently ignore failure — falls back to relative view)
@@ -901,7 +901,7 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
                   {activePlayers.filter(p => p.teamNum === 2).map((p, i) => (
                     <button
                       key={`t-${i}`}
-                      onClick={() => handleSelectPlayer(p.name)}
+                      onClick={() => handleSelectPlayer(p.name, p.xuid)}
                       disabled={!p.name}
                       className={cn(
                         "w-full text-left rounded-xl border px-4 py-3 transition-all flex items-center gap-3",
@@ -928,7 +928,7 @@ export function StatisticsModal({ demoName, filepath, players, onClose }: Statis
                   {activePlayers.filter(p => p.teamNum === 3).map((p, i) => (
                     <button
                       key={`ct-${i}`}
-                      onClick={() => handleSelectPlayer(p.name)}
+                      onClick={() => handleSelectPlayer(p.name, p.xuid)}
                       disabled={!p.name}
                       className={cn(
                         "w-full text-left rounded-xl border px-4 py-3 transition-all flex items-center gap-3",

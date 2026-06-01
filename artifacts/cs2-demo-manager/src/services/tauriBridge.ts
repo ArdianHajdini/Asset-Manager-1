@@ -308,14 +308,16 @@ export interface TauriDeathEvent {
 /**
  * Parse death events for the selected player from a CS2 demo.
  * playerName: exact in-game name of the player (from demo's m_iszPlayerName).
- * Returns all deaths where the victim's name matches playerName.
+ * playerSteamId: optional Steam ID64 for stable identity across FACEIT name changes.
+ * Returns all deaths where the victim's name or Steam ID matches.
  */
 export async function tauriParseDemoDeaths(
   filepath: string,
   playerName: string,
+  playerSteamId?: string,
 ): Promise<TauriDeathEvent[]> {
   const invoke = await getInvoke();
-  return invoke<TauriDeathEvent[]>("parse_demo_deaths", { filepath, playerName });
+  return invoke<TauriDeathEvent[]>("parse_demo_deaths", { filepath, playerName, playerSteamId: playerSteamId ?? null });
 }
 
 // ─────────────────────────────────────────
