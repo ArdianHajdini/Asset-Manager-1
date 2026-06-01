@@ -30,7 +30,7 @@ tokio = { version = "1", features = ["full"] }
 snap = "1"
 # CS2 demo entity parser — voice slot extraction via entity.index()
 # IMPORTANT: default-features = false to avoid mimalloc global allocator conflict with Tauri
-source2-demo = { version = "0.4", default-features = false, features = ["cs2"] }
+source2-demo = { version = "0.5", default-features = false, features = ["cs2"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Windows registry access — used in detect_steam_path

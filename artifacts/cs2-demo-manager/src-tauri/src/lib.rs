@@ -1733,13 +1733,25 @@ pub mod commands {
             }
         };
 
+        let mut primary_players: Vec<super::DemoPlayer> = Vec::new();
         match primary_result {
-            Ok(players) if !players.is_empty() => {
+            Ok(players) if !players.is_empty()
+                && players.iter().any(|p| p.team_num == 2)
+                && players.iter().any(|p| p.team_num == 3) => {
                 eprintln!(
                     "[CS2DM] parse_demo_players: {} Spieler via source2-demo",
                     players.len()
                 );
                 return Ok(players);
+            }
+            Ok(players) if !players.is_empty() => {
+                eprintln!(
+                    "[CS2DM] source2-demo: incomplete teams ({} players, {} T, {} CT) → CDemoFileInfo+CDemoStringTables Fallback",
+                    players.len(),
+                    players.iter().filter(|p| p.team_num == 2).count(),
+                    players.iter().filter(|p| p.team_num == 3).count()
+                );
+                primary_players = players;
             }
             Ok(_) => {
                 eprintln!(
@@ -1797,6 +1809,13 @@ pub mod commands {
                     }
                 }
             }
+        }
+
+        if players.is_empty() && !primary_players.is_empty() {
+            eprintln!(
+                "[CS2DM] parse_demo_players: fallback found no players → returning incomplete source2-demo players"
+            );
+            return Ok(primary_players);
         }
 
         if players.is_empty() {
