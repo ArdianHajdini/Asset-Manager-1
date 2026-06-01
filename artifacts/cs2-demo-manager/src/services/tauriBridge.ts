@@ -375,6 +375,7 @@ export interface TauriStatsDamageRow {
   damage: number;
   hitgroup: number;
   attackerTeam: number;
+  victimTeam: number;
   isUtility: boolean;
 }
 

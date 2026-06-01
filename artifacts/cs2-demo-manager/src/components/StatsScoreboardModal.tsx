@@ -141,6 +141,8 @@ export function StatsScoreboardModal({
     return list.map((p) => deriveRow(p, side)).sort((a, b) => compare(a, b, sortKey));
   }, [stats, side, sortKey]);
 
+  const isIncompatibleDemo = !!stats && stats.source === "incompatible";
+
   async function handleExport() {
     if (!stats) return;
     try {
@@ -251,6 +253,19 @@ export function StatsScoreboardModal({
               <div className="min-w-0">
                 <p className="font-semibold text-sm">Failed to parse demo</p>
                 <p className="text-xs text-red-300/80 mt-1 break-words">{error}</p>
+              </div>
+            </div>
+          )}
+
+          {isIncompatibleDemo && !loading && !error && (
+            <div className="mb-4 flex items-start gap-3 p-4 rounded-lg border border-amber-500/30 bg-amber-900/20 text-amber-200">
+              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="font-semibold text-sm">Demo parser is incompatible with this file</p>
+                <p className="text-xs text-amber-200/80 mt-1 break-words">
+                  This demo hit a known parser edge case and returned no reliable statistics.
+                  Try another demo or update the parser dependency/fork patch.
+                </p>
               </div>
             </div>
           )}

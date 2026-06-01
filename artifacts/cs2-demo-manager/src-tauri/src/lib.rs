@@ -228,6 +228,7 @@ pub struct StatsDamageRow {
     pub damage: u32,
     pub hitgroup: u8,
     pub attacker_team: u8,
+    pub victim_team: u8,
     pub is_utility: bool,
 }
 
@@ -2971,6 +2972,7 @@ pub mod commands {
                         let attacker_id = self.ctrl_steamid.get(&attacker_ctrl).cloned().unwrap_or_default();
                         let victim_id   = self.ctrl_steamid.get(&victim_ctrl).cloned().unwrap_or_default();
                         let attacker_team = self.ctrl_team.get(&attacker_ctrl).copied().unwrap_or(0);
+                        let victim_team = self.ctrl_team.get(&victim_ctrl).copied().unwrap_or(0);
                         let is_utility = is_utility_weapon(&weapon);
 
                         self.damages.push(super::super::StatsDamageRow {
@@ -2982,6 +2984,7 @@ pub mod commands {
                             damage: dmg.max(0) as u32,
                             hitgroup: hitgroup.clamp(0, 255) as u8,
                             attacker_team,
+                            victim_team,
                             is_utility,
                         });
                     }
@@ -3091,6 +3094,11 @@ pub mod commands {
             // Aggregate damage
             for d in &obs.damages {
                 if d.attacker_id.is_empty() || d.attacker_id == d.victim_id { continue; }
+                if (d.attacker_team == 2 || d.attacker_team == 3)
+                    && d.attacker_team == d.victim_team
+                {
+                    continue;
+                }
                 ensure(&mut players, &d.attacker_id);
                 let p = players.get_mut(&d.attacker_id).unwrap();
                 p.damage_dealt += d.damage;
@@ -3139,20 +3147,57 @@ pub mod commands {
                 }
             }
 
-            // Rounds played + per-side rounds (from round_participants snapshots).
+            // Rounds played + per-side rounds.
+            // Primary signal: round_start participant snapshots.
+            // Fallback signal: if a player has any event (kill/death/assist/damage)
+            // in a completed round, count that round too. This prevents ADR/KAST
+            // denominator drift when a controller was missing in a round_start
+            // snapshot but present in actual round events.
+            let mut event_presence: HashMap<u32, HashSet<String>> = HashMap::new();
+            for k in &kills {
+                let set = event_presence.entry(k.round).or_default();
+                if !k.killer_id.is_empty() { set.insert(k.killer_id.clone()); }
+                if !k.victim_id.is_empty() { set.insert(k.victim_id.clone()); }
+                if !k.assister_id.is_empty() { set.insert(k.assister_id.clone()); }
+            }
+            for d in &obs.damages {
+                let set = event_presence.entry(d.round).or_default();
+                if !d.attacker_id.is_empty() { set.insert(d.attacker_id.clone()); }
+                if !d.victim_id.is_empty() { set.insert(d.victim_id.clone()); }
+            }
+
+            let mut seen_player_rounds: HashSet<(String, u32)> = HashSet::new();
+            let mut count_round_once = |sid: &str, round_num: u32, team: u8,
+                                        players: &mut HashMap<String, super::super::PlayerStats>,
+                                        ensure: &dyn Fn(&mut HashMap<String, super::super::PlayerStats>, &str)| {
+                if sid.is_empty() { return; }
+                let key = (sid.to_string(), round_num);
+                if !seen_player_rounds.insert(key) { return; }
+                ensure(players, sid);
+                let p = players.get_mut(sid).unwrap();
+                p.rounds_played += 1;
+                match team {
+                    2 => p.t_rounds += 1,
+                    3 => p.ct_rounds += 1,
+                    _ => {}
+                }
+            };
+
             // Only count completed rounds (matching round_rows[i].end_tick > 0).
             for (i, parts) in obs.round_participants.iter().enumerate() {
                 let is_completed = obs.round_rows.get(i)
                     .map(|rr| rr.end_tick > 0).unwrap_or(false);
                 if !is_completed { continue; }
+                let round_num = (i as u32) + 1;
                 for (sid, team) in parts.iter() {
-                    ensure(&mut players, sid);
-                    let p = players.get_mut(sid).unwrap();
-                    p.rounds_played += 1;
-                    match *team {
-                        2 => p.t_rounds += 1,
-                        3 => p.ct_rounds += 1,
-                        _ => {}
+                    count_round_once(sid, round_num, *team, &mut players, &ensure);
+                }
+                if let Some(ev_players) = event_presence.get(&round_num) {
+                    for sid in ev_players {
+                        let team = parts.get(sid).copied().unwrap_or_else(|| {
+                            players.get(sid).map(|p| p.team_num).unwrap_or(0)
+                        });
+                        count_round_once(sid, round_num, team, &mut players, &ensure);
                     }
                 }
             }
