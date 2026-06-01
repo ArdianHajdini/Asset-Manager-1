@@ -2870,7 +2870,18 @@ pub mod commands {
                         self.round_participants.clear();
                     }
                     "round_start" => {
-                        if !self.match_started { return Ok(()); }
+                        if !self.match_started {
+                            // Some demos do not emit begin_new_match / round_announce_match_start
+                            // before the first real round. Treat the first round_start as a
+                            // conservative match-start fallback instead of returning empty stats.
+                            self.match_started = true;
+                            self.current_round = 0;
+                            self.round_open = false;
+                            self.kills.clear();
+                            self.damages.clear();
+                            self.round_rows.clear();
+                            self.round_participants.clear();
+                        }
                         self.current_round += 1;
                         self.round_open = true;
                         self.round_start_tick = tick;
@@ -3005,20 +3016,29 @@ pub mod commands {
         ) -> super::super::DemoStats {
             let mut kills = obs.kills.clone();
 
+            let is_valid_enemy_kill = |k: &super::super::StatsKillRow| {
+                !k.killer_id.is_empty()
+                    && !k.victim_id.is_empty()
+                    && k.killer_id != k.victim_id
+                    && (k.killer_team == 2 || k.killer_team == 3)
+                    && (k.victim_team == 2 || k.victim_team == 3)
+                    && k.killer_team != k.victim_team
+            };
+
             // Mark trade kills: K1 was traded if there exists a later K2 within
             // TRADE_WINDOW_TICKS where K2.killer is on K1.victim's team and
             // K2.victim == K1.killer.
             for i in 0..kills.len() {
+                if !is_valid_enemy_kill(&kills[i]) { continue; }
                 let k1_tick = kills[i].tick;
                 let k1_killer = kills[i].killer_id.clone();
                 let k1_victim_team = kills[i].victim_team;
-                if k1_killer.is_empty() { continue; }
                 for j in (i+1)..kills.len() {
                     if kills[j].tick.saturating_sub(k1_tick) > TRADE_WINDOW_TICKS { break; }
                     if kills[j].round != kills[i].round { break; }
-                    if kills[j].killer_team == k1_victim_team
+                    if is_valid_enemy_kill(&kills[j])
+                        && kills[j].killer_team == k1_victim_team
                         && kills[j].victim_id == k1_killer
-                        && !kills[j].killer_id.is_empty()
                     {
                         kills[i].is_trade = true;
                         break;
@@ -3029,7 +3049,7 @@ pub mod commands {
             // Mark entry kills: first kill of each round
             let mut seen_rounds: HashSet<u32> = HashSet::new();
             for k in kills.iter_mut() {
-                if !seen_rounds.contains(&k.round) {
+                if is_valid_enemy_kill(k) && !seen_rounds.contains(&k.round) {
                     seen_rounds.insert(k.round);
                     k.is_entry = true;
                 }
@@ -3062,7 +3082,7 @@ pub mod commands {
 
             // Aggregate kills
             for k in &kills {
-                if !k.killer_id.is_empty() && k.killer_id != k.victim_id {
+                if is_valid_enemy_kill(k) {
                     ensure(&mut players, &k.killer_id);
                     let p = players.get_mut(&k.killer_id).unwrap();
                     p.kills += 1;
@@ -3085,7 +3105,11 @@ pub mod commands {
                         _ => {}
                     }
                 }
-                if !k.assister_id.is_empty() {
+                if is_valid_enemy_kill(k)
+                    && !k.assister_id.is_empty()
+                    && k.assister_id != k.killer_id
+                    && k.assister_id != k.victim_id
+                {
                     ensure(&mut players, &k.assister_id);
                     players.get_mut(&k.assister_id).unwrap().assists += 1;
                 }
@@ -3110,49 +3134,6 @@ pub mod commands {
                 }
             }
 
-            // KAST per round — count only COMPLETED rounds (end_tick > 0).
-            // A round_start without a matching round_end (truncated demo, last
-            // round of an aborted match) is not "played" for the purpose of
-            // KAST/ADR denominators.
-            let completed_rounds: Vec<u32> = obs.round_rows.iter()
-                .filter(|rr| rr.end_tick > 0)
-                .map(|rr| rr.round)
-                .collect();
-            let total_rounds = completed_rounds.len() as u32;
-            for &round_num in &completed_rounds {
-                let kr: Vec<&super::super::StatsKillRow> = kills.iter()
-                    .filter(|k| k.round == round_num).collect();
-                let killers:  HashSet<&String> = kr.iter()
-                    .map(|k| &k.killer_id).filter(|s| !s.is_empty()).collect();
-                let assisters: HashSet<&String> = kr.iter()
-                    .map(|k| &k.assister_id).filter(|s| !s.is_empty()).collect();
-                let victims:  HashSet<&String> = kr.iter()
-                    .map(|k| &k.victim_id).filter(|s| !s.is_empty()).collect();
-                let traded_victims: HashSet<&String> = kr.iter()
-                    .filter(|k| k.is_trade).map(|k| &k.victim_id).collect();
-
-                if let Some(parts) = obs.round_participants.get((round_num - 1) as usize) {
-                    for sid in parts.keys() {
-                        ensure(&mut players, sid);
-                        let p = players.get_mut(sid).unwrap();
-                        let got_k = killers.contains(&sid);
-                        let got_a = assisters.contains(&sid);
-                        let died  = victims.contains(&sid);
-                        let traded = traded_victims.contains(&sid);
-                        let survived = !died;
-                        if got_k || got_a || survived || traded {
-                            p.kast_rounds += 1;
-                        }
-                    }
-                }
-            }
-
-            // Rounds played + per-side rounds.
-            // Primary signal: round_start participant snapshots.
-            // Fallback signal: if a player has any event (kill/death/assist/damage)
-            // in a completed round, count that round too. This prevents ADR/KAST
-            // denominator drift when a controller was missing in a round_start
-            // snapshot but present in actual round events.
             let mut event_presence: HashMap<u32, HashSet<String>> = HashMap::new();
             for k in &kills {
                 let set = event_presence.entry(k.round).or_default();
@@ -3166,6 +3147,59 @@ pub mod commands {
                 if !d.victim_id.is_empty() { set.insert(d.victim_id.clone()); }
             }
 
+            // KAST per round — count only COMPLETED rounds (end_tick > 0).
+            // A round_start without a matching round_end (truncated demo, last
+            // round of an aborted match) is not "played" for the purpose of
+            // KAST/ADR denominators.
+            let completed_rounds: Vec<u32> = obs.round_rows.iter()
+                .filter(|rr| rr.end_tick > 0)
+                .map(|rr| rr.round)
+                .collect();
+            let total_rounds = completed_rounds.len() as u32;
+            for &round_num in &completed_rounds {
+                let kr: Vec<&super::super::StatsKillRow> = kills.iter()
+                    .filter(|k| k.round == round_num).collect();
+                let valid_kr: Vec<&super::super::StatsKillRow> = kr.iter()
+                    .copied()
+                    .filter(|k| is_valid_enemy_kill(k))
+                    .collect();
+                let killers: HashSet<String> = valid_kr.iter()
+                    .map(|k| k.killer_id.clone()).filter(|s| !s.is_empty()).collect();
+                let assisters: HashSet<String> = valid_kr.iter()
+                    .map(|k| k.assister_id.clone()).filter(|s| !s.is_empty()).collect();
+                let victims: HashSet<String> = kr.iter()
+                    .map(|k| k.victim_id.clone()).filter(|s| !s.is_empty()).collect();
+                let traded_victims: HashSet<String> = valid_kr.iter()
+                    .filter(|k| k.is_trade).map(|k| k.victim_id.clone()).collect();
+
+                let mut kast_candidates: HashSet<String> = HashSet::new();
+                if let Some(parts) = obs.round_participants.get((round_num - 1) as usize) {
+                    kast_candidates.extend(parts.keys().cloned());
+                }
+                if let Some(ev_players) = event_presence.get(&round_num) {
+                    kast_candidates.extend(ev_players.iter().cloned());
+                }
+
+                for sid in kast_candidates {
+                    ensure(&mut players, &sid);
+                    let p = players.get_mut(&sid).unwrap();
+                    let got_k = killers.contains(&sid);
+                    let got_a = assisters.contains(&sid);
+                    let died  = victims.contains(&sid);
+                    let traded = traded_victims.contains(&sid);
+                    let survived = !died;
+                    if got_k || got_a || survived || traded {
+                        p.kast_rounds += 1;
+                    }
+                }
+            }
+
+            // Rounds played + per-side rounds.
+            // Primary signal: round_start participant snapshots.
+            // Fallback signal: if a player has any event (kill/death/assist/damage)
+            // in a completed round, count that round too. This prevents ADR/KAST
+            // denominator drift when a controller was missing in a round_start
+            // snapshot but present in actual round events.
             let mut seen_player_rounds: HashSet<(String, u32)> = HashSet::new();
             let mut count_round_once = |sid: &str, round_num: u32, team: u8,
                                         players: &mut HashMap<String, super::super::PlayerStats>,
