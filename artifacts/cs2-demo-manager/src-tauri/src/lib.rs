@@ -2629,17 +2629,10 @@ pub mod commands {
                         let victim_team = self.ctrl_team.get(&victim_ctrl).copied().unwrap_or(0);
                         let killer_team = self.ctrl_team.get(&killer_ctrl).copied().unwrap_or(0);
 
-                        // The individual fight analyzer is enemy-duel focused. If
-                        // both teams are known and equal, skip the event so warmup,
-                        // bot/proxy, or friendly-fire noise does not become a real
-                        // kill/death entry for the tracked player.
-                        if killer_ctrl != victim_ctrl
+                        let same_team = killer_ctrl != victim_ctrl
                             && (victim_team == 2 || victim_team == 3)
                             && (killer_team == 2 || killer_team == 3)
-                            && victim_team == killer_team
-                        {
-                            return Ok(());
-                        }
+                            && victim_team == killer_team;
 
                         // Include events where the tracked player is the victim OR the killer.
                         if !self.target_player_name.is_empty()
@@ -2754,10 +2747,11 @@ pub mod commands {
                             .map(|p| p.to_string())
                             .unwrap_or_else(|| "NONE".to_string());
                         let debug_info = format!(
-                            "uid_raw={} att_raw={} | vc={} vt={} vp={} kc={} kt={} kp={} | vpos=[{:.0},{:.0},{:.0}] kpos=[{:.0},{:.0},{:.0}] | posData={} | kill={} | victim={:?} killer={:?} sid={:?}",
+                            "uid_raw={} att_raw={} | vc={} vt={} vp={} kc={} kt={} kp={} | sameTeam={} | vpos=[{:.0},{:.0},{:.0}] kpos=[{:.0},{:.0},{:.0}] | posData={} | kill={} | victim={:?} killer={:?} sid={:?}",
                             raw_userid, raw_attacker,
                             victim_ctrl, victim_team, victim_pawn_str,
                             killer_ctrl, killer_team, killer_pawn_str,
+                            same_team,
                             victim_snap.x, victim_snap.y, victim_snap.z,
                             killer_snap.x, killer_snap.y, killer_snap.z,
                             has_pos_data, player_is_killer,
