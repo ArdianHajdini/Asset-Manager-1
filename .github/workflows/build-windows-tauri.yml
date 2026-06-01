@@ -6,6 +6,11 @@ on:
     paths:
       - "artifacts/cs2-demo-manager/**"
       - ".github/workflows/build-windows-tauri.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "artifacts/cs2-demo-manager/**"
+      - ".github/workflows/build-windows-tauri.yml"
   workflow_dispatch:
 
 jobs:
