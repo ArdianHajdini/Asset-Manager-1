@@ -3079,6 +3079,25 @@ pub mod commands {
                                 winner_team: 0,
                             });
                         }
+                        if !self.round_open && self.match_started && self.current_round > 0 {
+                            self.current_round += 1;
+                            self.round_open = true;
+                            self.round_start_tick = tick;
+                            let mut snap: HashMap<String, u8> = HashMap::new();
+                            for (ctrl_idx, sid) in self.ctrl_steamid.iter() {
+                                let team = self.ctrl_team.get(ctrl_idx).copied().unwrap_or(0);
+                                if team == 2 || team == 3 {
+                                    snap.insert(sid.clone(), team);
+                                }
+                            }
+                            self.round_participants.push(snap);
+                            self.round_rows.push(super::super::StatsRoundRow {
+                                round: self.current_round,
+                                start_tick: tick,
+                                end_tick: 0,
+                                winner_team: 0,
+                            });
+                        }
 
                         let raw_userid: i32 = event.get_value("userid")
                             .ok().and_then(|v| TryInto::<i32>::try_into(v).ok()).unwrap_or(0);
@@ -3125,6 +3144,25 @@ pub mod commands {
                         if self.current_round == 0 {
                             self.current_round = 1;
                             self.synthetic_round = true;
+                            self.round_open = true;
+                            self.round_start_tick = tick;
+                            let mut snap: HashMap<String, u8> = HashMap::new();
+                            for (ctrl_idx, sid) in self.ctrl_steamid.iter() {
+                                let team = self.ctrl_team.get(ctrl_idx).copied().unwrap_or(0);
+                                if team == 2 || team == 3 {
+                                    snap.insert(sid.clone(), team);
+                                }
+                            }
+                            self.round_participants.push(snap);
+                            self.round_rows.push(super::super::StatsRoundRow {
+                                round: self.current_round,
+                                start_tick: tick,
+                                end_tick: 0,
+                                winner_team: 0,
+                            });
+                        }
+                        if !self.round_open && self.match_started && self.current_round > 0 {
+                            self.current_round += 1;
                             self.round_open = true;
                             self.round_start_tick = tick;
                             let mut snap: HashMap<String, u8> = HashMap::new();
