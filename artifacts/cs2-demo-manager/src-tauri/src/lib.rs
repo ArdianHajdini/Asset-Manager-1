@@ -2456,6 +2456,14 @@ pub mod commands {
                         self.deaths.clear();
                         self.last_kill_tick.clear();
                         self.last_weapon_fire.clear();
+                        // Clear stale warmup entity data — CS2 delta-compressed
+                        // entity updates may not include m_iTeamNum on every
+                        // tick, so old warmup teams can persist in ctrl_team
+                        // even after new players take the same entity indices.
+                        self.ctrl_team.clear();
+                        self.ctrl_steamid.clear();
+                        self.ctrl_name.clear();
+                        self.ctrl_to_pawn.clear();
                     }
                     "round_start" => {
                         if !self.match_started {
@@ -2464,6 +2472,10 @@ pub mod commands {
                             self.deaths.clear();
                             self.last_kill_tick.clear();
                             self.last_weapon_fire.clear();
+                            self.ctrl_team.clear();
+                            self.ctrl_steamid.clear();
+                            self.ctrl_name.clear();
+                            self.ctrl_to_pawn.clear();
                         }
                         if self.synthetic_round {
                             // Synthetic round 1 was already created from a
@@ -2964,6 +2976,11 @@ pub mod commands {
                         self.damages.clear();
                         self.round_rows.clear();
                         self.round_participants.clear();
+                        // Clear stale warmup entity data — see DeathObserver
+                        // for rationale (delta-compressed m_iTeamNum).
+                        self.ctrl_team.clear();
+                        self.ctrl_steamid.clear();
+                        self.ctrl_name.clear();
                     }
                     "round_start" => {
                         if !self.match_started {
@@ -2977,31 +2994,50 @@ pub mod commands {
                             self.damages.clear();
                             self.round_rows.clear();
                             self.round_participants.clear();
+                            self.ctrl_team.clear();
+                            self.ctrl_steamid.clear();
+                            self.ctrl_name.clear();
                         }
                         if self.synthetic_round {
-                            // Round 1 was created from a combat event — don't double-increment.
+                            // Round 1 was created from a combat event — don't double-increment
+                            // and don't push a duplicate row/snapshot.
                             self.synthetic_round = false;
+                            // Update the synthetic row's start_tick to the actual round start.
+                            if let Some(rr) = self.round_rows.last_mut() {
+                                rr.start_tick = tick;
+                            }
+                            // Replace the synthetic snapshot with a fresh one.
+                            let mut snap: HashMap<String, u8> = HashMap::new();
+                            for (ctrl_idx, sid) in self.ctrl_steamid.iter() {
+                                let team = self.ctrl_team.get(ctrl_idx).copied().unwrap_or(0);
+                                if team == 2 || team == 3 {
+                                    snap.insert(sid.clone(), team);
+                                }
+                            }
+                            if let Some(last) = self.round_participants.last_mut() {
+                                *last = snap;
+                            }
                         } else {
                             self.current_round += 1;
-                        }
-                        self.round_open = true;
-                        self.round_start_tick = tick;
-                        // Snapshot every known controller's team for this round.
-                        let mut snap: HashMap<String, u8> = HashMap::new();
-                        for (ctrl_idx, sid) in self.ctrl_steamid.iter() {
-                            let team = self.ctrl_team.get(ctrl_idx).copied().unwrap_or(0);
-                            if team == 2 || team == 3 {
-                                snap.insert(sid.clone(), team);
+                            self.round_open = true;
+                            self.round_start_tick = tick;
+                            // Snapshot every known controller's team for this round.
+                            let mut snap: HashMap<String, u8> = HashMap::new();
+                            for (ctrl_idx, sid) in self.ctrl_steamid.iter() {
+                                let team = self.ctrl_team.get(ctrl_idx).copied().unwrap_or(0);
+                                if team == 2 || team == 3 {
+                                    snap.insert(sid.clone(), team);
+                                }
                             }
+                            self.round_participants.push(snap);
+                            // Push placeholder round row; winner/end_tick filled later.
+                            self.round_rows.push(super::super::StatsRoundRow {
+                                round: self.current_round,
+                                start_tick: tick,
+                                end_tick: 0,
+                                winner_team: 0,
+                            });
                         }
-                        self.round_participants.push(snap);
-                        // Push placeholder round row; winner/end_tick filled later.
-                        self.round_rows.push(super::super::StatsRoundRow {
-                            round: self.current_round,
-                            start_tick: tick,
-                            end_tick: 0,
-                            winner_team: 0,
-                        });
                     }
                     "round_end" => {
                         if !self.match_started || !self.round_open { return Ok(()); }
@@ -3292,14 +3328,15 @@ pub mod commands {
                 if !d.victim_id.is_empty() { set.insert(d.victim_id.clone()); }
             }
 
-            // KAST per round. Prefer completed rounds (end_tick > 0), but some
-            // CS2/SourceTV demos expose kill/damage events without reliable
-            // round_end events. In that case, fall back to rounds that have
-            // actual combat events so the scoreboard does not collapse to zero.
+            // Use all round rows. CS2/SourceTV demos commonly omit round_end
+            // events, so don't require end_tick > 0. Every round_start or
+            // synthetic-start row represents a real round.
             let mut completed_rounds: Vec<u32> = obs.round_rows.iter()
-                .filter(|rr| rr.end_tick > 0)
                 .map(|rr| rr.round)
                 .collect();
+            completed_rounds.sort_unstable();
+            completed_rounds.dedup();
+            // If round_rows is somehow empty, fall back to combat-event rounds.
             if completed_rounds.is_empty() {
                 let mut event_rounds: HashSet<u32> = HashSet::new();
                 for k in &kills {
