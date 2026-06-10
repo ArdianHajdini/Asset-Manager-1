@@ -1,0 +1,1 @@
+- [GitHub push/branch setup](github-push-setup.md) — full stats version lives on GitHub main/stable; stripped voice+gumroad build goes to a SEPARATE branch; git commit/config are sandbox-blocked.

@@ -19,7 +19,6 @@ A paid CS2 demo manager for FACEIT players — packaged as a Tauri desktop app (
   - Drag-and-drop import + native file picker; .dem and .dem.gz/.dem.zst decompression
   - Voice mode filter: copy `tv_listen_voice_indices` command for T/CT team hearing
   - CS2 launch: Steam URI → direct cs2.exe → clipboard fallback
-  - Statistics: per-death fight analysis with player picker (T/CT teams), crosshair error, FOV, speed, shot-before-stop, 2D SVG fight diagram, verdict
   - Gumroad license activation + 7-day offline grace period + startup online validation
   - Auto-detect Steam/CS2 path, FACEIT demo downloads (reqwest)
 - **Rust commands** (`src-tauri/src/lib.rs`):
@@ -27,16 +26,13 @@ A paid CS2 demo manager for FACEIT players — packaged as a Tauri desktop app (
   - `launch_cs2`, `check_cs2_path`, `detect_steam_path`, `get_replay_folder`, `get_file_info`
   - `is_cs2_running`, `download_demo`, `scan_downloads`, `detect_downloads_folder`
   - `parse_demo_players` — source2-demo entity observer for voice slots
-  - `parse_demo_deaths(filepath, steam_id)` — source2-demo observer for player_death events + entity positions; returns `DemoDeathEvent[]`
-  - `parse_demo_stats(filepath)` — Awpy-style scoreboard observer (s2_stats module); per-player aggregates keyed by SteamID64 (kills/deaths/assists, K/D, ADR, HS%, KAST, entry K/D, T/CT side splits, utility damage); raw kills/damages/rounds tables; trade window 5s = 320 ticks @ 64Hz
-  - `write_stats_debug(demo_filepath, json)` — auto-saves JSON sidecar to `<demo>.stats-debug.json` next to the demo
   - `verify_license(license_key, provider)` — Gumroad verify via reqwest
   - `validate_license_stored(license_key, instance_id, provider)` — Gumroad re-validate
 - **Key license storage**: `fedcs2_license` in localStorage `{key, instanceId, validatedAt, provider:"gumroad"}`
 - **Key TypeScript services**: `licenseService.ts`, `tauriBridge.ts`, `demoService.ts`, `voiceService.ts`
-- **Key components**: `DemoCard.tsx` (voice mode + Statistics + Scoreboard buttons), `StatisticsModal.tsx` (player picker + fight analysis cards), `StatsScoreboardModal.tsx` (Awpy-style scoreboard table, sortable, T/CT/Both filter, auto-writes stats-debug.json)
-- **Rust parser note**: CS2 `player_death` uses `userid`/`attacker` as controller handles (mask `& 0x3FFF` for entity index), NOT `player_name`/`attacker_name`
+- **Key components**: `DemoCard.tsx` (demo card with voice-mode controls)
 - **Build for Windows**: `pnpm tauri build --target x86_64-pc-windows-msvc` on Windows/CI
+- **Note**: Statistics/scoreboard features (per-death fight analysis, Awpy-style scoreboard, map radar, demo-stats parsing) were removed to keep a stable voice + Gumroad build. The full version is preserved on GitHub `main`/`stable`.
 
 ## Stack
 
